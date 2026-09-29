@@ -30,10 +30,10 @@ if ! cargo metadata --format-version 1 --locked >/dev/null 2>&1; then
 fi
 
 if [[ "$MODE" == "release" ]]; then
-  cargo build --release -p skate-game --bin skate3rust --no-default-features
+  cargo build --release --locked -p skate-game --bin skate3rust --no-default-features
   EXE="target/release/skate3rust"
 else
-  cargo build -p skate-game --bin skate3rust --no-default-features
+  cargo build --locked -p skate-game --bin skate3rust --no-default-features
   EXE="target/debug/skate3rust"
 fi
 

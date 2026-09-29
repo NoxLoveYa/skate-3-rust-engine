@@ -7,8 +7,8 @@
 # with --fbx-tool target/importer-runtime/FBX2glTF)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="${1:-}"
-if [[ "${1:-}" == "--dest" ]]; then DEST="${2:-}"; fi
+DEST=""
+if [[ "${1:-}" == "--dest" ]]; then DEST="${2:?missing DIR for --dest}"; elif [[ $# -gt 0 ]]; then DEST="$1"; fi
 DEST="${DEST:-$ROOT/target/importer-runtime}"
 
 URL="https://github.com/facebookincubator/FBX2glTF/releases/download/v0.9.7/FBX2glTF-darwin-x64"
@@ -25,11 +25,12 @@ mkdir -p "$CACHE" "$DEST"
 ARCHIVE="$CACHE/FBX2glTF-darwin-x64"
 if [[ ! -f "$ARCHIVE" ]]; then
   echo "Downloading FBX2glTF v0.9.7 (darwin)..." >&2
-  curl -sSL -o "$ARCHIVE" "$URL"
+  curl -fSL -o "$ARCHIVE" "$URL"
 fi
 ACTUAL="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
 if [[ "$ACTUAL" != "$SHA" ]]; then
-  echo "FBX2glTF checksum mismatch; remove $ARCHIVE and retry." >&2
+  echo "FBX2glTF checksum mismatch; deleting $ARCHIVE so the next run retries." >&2
+  rm -f "$ARCHIVE"
   exit 1
 fi
 cp -f "$ARCHIVE" "$DEST/FBX2glTF"

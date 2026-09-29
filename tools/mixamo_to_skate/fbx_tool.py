@@ -22,7 +22,11 @@ SHA = {
 
 
 def bundled_name():
-    return 'FBX2glTF.exe' if sys.platform == 'win32' else 'FBX2glTF'
+    if sys.platform == 'win32':
+        return 'FBX2glTF.exe'
+    if sys.platform == 'darwin':
+        return 'FBX2glTF'
+    raise RuntimeError('FBX character import is supported on Windows and macOS only')
 
 
 def bundled_path(root):
@@ -30,5 +34,7 @@ def bundled_path(root):
 
 
 def missing_message():
+    if sys.platform == 'win32':
+        return 'FBX2glTF.exe is missing; run the converter setup'
     return (bundled_name() + ' is missing; fetch it with '
             'scripts/prepare-character-importer-macos.sh (macOS) or pass --fbx-tool')

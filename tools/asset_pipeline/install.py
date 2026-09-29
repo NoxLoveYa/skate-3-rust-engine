@@ -70,10 +70,13 @@ def dependency(cache,name,url,sha,report):
     marker=folder/'.complete'
     if not marker.is_file():
         unpack_zip(download(url,sha,cache,report),folder)
-        marker.write_text(sha)
     # Windows ships `name.exe`; macOS/Linux ship extension-less `name`.
-    executable=next(folder.rglob(name+'.exe'),None) or next(folder.rglob(name),None)
-    if executable is None or executable.is_dir():raise RuntimeError('Missing downloaded tool: '+name)
+    # Match files only, then record the marker so a layout change cannot
+    # poison the cache with an unverified marker.
+    executable=(next((p for p in folder.rglob(name+'.exe') if p.is_file()),None)
+                or next((p for p in folder.rglob(name) if p.is_file()),None))
+    if executable is None:raise RuntimeError('Missing downloaded tool: '+name)
+    marker.write_text(sha)
     if os.name != 'nt':
         executable.chmod(executable.stat().st_mode | 0o111)
     return executable
@@ -269,10 +272,14 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             extractor=dependency(base/'tools','extract-xiso',XISO_URL,XISO_SHA,report)
             game_root=work/'disc'
             report('Extracting your ISO')
-            # Option order matters: this extract-xiso generation only honours
-            # -d when it precedes the image path, otherwise it silently
-            # expands into the current directory (verified on macOS).
-            run([extractor,'-x','-d',game_root,iso],log,report)
+            if os.name=='nt':
+                # Historical order; verified by the Windows release flow.
+                run([extractor,'-x',iso,'-d',game_root],log,report)
+            else:
+                # This extract-xiso generation only honours -d before the
+                # image path, otherwise it silently expands into the working
+                # directory (verified on macOS against the pinned build).
+                run([extractor,'-x','-d',game_root,iso],log,report)
         else:game_root=game_root.resolve()
         required_files=['default.xex']
         if 'core' in groups:required_files += ['data/big/miscload.big','data/big/miscboot.big','data/big/db.big']

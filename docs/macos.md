@@ -1,11 +1,12 @@
 # macOS (Apple Silicon MacBook) port
 
-![Skater on the board at University, rendered on Metal (47 FPS on M4 Pro)](images/macos-university.png)
+![Skater on the board at University, rendered on Metal (47 FPS on M4 Pro in that capture)](images/macos-university.png)
 
 Tested target: Apple Silicon MacBook (M1/M2/M3/M4), macOS 14+, `aarch64-apple-darwin`.
+Verified on Apple M4 Pro, macOS 27.0 (`sw_vers`).
 Intel Macs should also build (`x86_64-apple-darwin`) but are untested.
 
-This checkout already contains the port changes (branch `macos-port`). Upstream
+This checkout already contains the port changes (branch `macos`). Upstream
 `main` is Windows-only: Vulkan + XInput + `.exe`/`.dll` helpers + Win64-only
 asset tools. This document explains what changed and how to run it.
 
@@ -97,8 +98,8 @@ Afterwards:
 
 ```bash
 ./scripts/launch-macos.sh
-# or a specific map:
-./scripts/launch-macos.sh maps/University.skate
+# or a specific converted map:
+./scripts/launch-macos.sh assets/installations/<id>/maps/University.skate
 ```
 
 In-game: Esc opens graphics/difficulty/map settings. Maps switch without
@@ -163,7 +164,12 @@ lean CPU side** — there is no Metal-specific code defect to fix:
 - `AdapterInfo` reports the M4 Pro on the Metal backend with GPU
   preprocessing fully supported and occlusion culling active.
 
-So the levers are quality settings, all already in the Esc menu:
+So the levers are quality settings, all already in the Esc menu. One
+structural candidate was measured and rejected: disabling the depth
+prepass + occlusion culling (`SKATE_OCCLUSION=0`) on identical spawn
+captures came out at p50 19.78 ms / p95 21.44 ms versus p50 19.68 ms /
+p95 20.57 ms with occlusion on — the prepass earns its keep even on
+TBDR Metal, so the default stays on:
 
 | Knob | Cost driver | Note |
 |---|---|---|
@@ -205,13 +211,16 @@ reduces, and only under proven sustained pressure.
 
 ## Files changed
 
-- `crates/skate-game/src/app.rs` — Metal backend, conditional GilrsPlugin
-- `crates/skate-game/src/input/platform.rs` — gilrs desktop transport
-- `crates/skate-game/Cargo.toml` — `target.'cfg(not(windows))'.dependencies.gilrs`, wgpu metal feature
+- `crates/skate-game/src/app.rs` — Metal backend, unconditional GilrsPlugin disable (no game system consumes Bevy gamepad events on any OS)
+- `crates/skate-game/src/input/platform.rs` — gilrs desktop transport (unfiltered, XInput trigger semantics), shared XInput bit consts
+- `crates/skate-game/src/input/keyboard.rs` *(new)* — padless fallback (WASD/arrows/Space-JKL/QE/ZC/TFGH/Enter-Backspace/RV)
+- `crates/skate-game/src/input.rs` — ownership-preserving slot-0 fallback wiring
+- `crates/skate-game/src/graphics_menu.rs` — `AutoScale` governor (7 unit tests) + `[auto N%]` display
 - `crates/skate-game/src/platform_bins.rs` *(new)* — portable helper names
-- `crates/skate-game/src/{updater,setup,custom_models}.rs`, `multiplayer/transport.rs` — use it
-- `crates/skate-game/src/{input,main,retail_shader_tests}.rs` — platform-neutral log/probe
-- `tools/asset_pipeline/{fast_refpack,install}.py` — dylib + per-OS XISO pins
+- `crates/skate-game/src/{updater,setup,custom_models}.rs`, `multiplayer/transport.rs` — use it (relay re-chmod on Unix)
+- `crates/skate-game/src/{main,retail_shader_tests}.rs` — platform-neutral log/probe
+- `crates/skate-game/Cargo.toml`, `Cargo.lock` — non-Windows `gilrs =0.11.2`, wgpu `metal` dev feature
+- `tools/asset_pipeline/{fast_refpack,install}.py` — dylib loading, per-OS XISO pins, verified-before-marker, fixed extractor arg order off-Windows
 - `tools/mixamo_to_skate/{fbx_tool.py (new),converter,library_import,main,check_package}.py` — platform-aware importer
 - `scripts/{build-macos,launch-macos,download-macos-deps,prepare-character-importer-macos,build-macos-release}.sh` *(new)*
-- `.github/workflows/macos.yml` *(new)*
+- `.github/workflows/macos.yml` *(new)*, `docs/macos.md` *(new)*, `docs/images/macos-university.png` *(new)*

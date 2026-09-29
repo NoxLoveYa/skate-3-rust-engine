@@ -13,7 +13,10 @@ _candidates = [Path(__file__).with_name(n) for n in _native_names]
 _candidates += [Path(__file__).resolve().parents[2] / 'target/native' / n for n in _native_names]
 for path in _candidates:
     if path.is_file():
-        _library = ctypes.CDLL(str(path))
+        try:
+            _library = ctypes.CDLL(str(path))
+        except OSError:
+            continue
         _library.skate_refpack.argtypes=[ctypes.c_char_p,ctypes.c_size_t,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_bool]
         _library.skate_refpack.restype=ctypes.c_int
         break

@@ -52,9 +52,11 @@ XISO_URL="https://github.com/XboxDev/extract-xiso/releases/download/build-202505
 XISO_SHA="371e4a800086e875257ddafc037970789fb942b69dbf8ab0ba8301ff7799fef0"
 mkdir -p target/tool-deps
 XISO_ZIP="target/tool-deps/extract-xiso_macOS.zip"
-if [[ ! -f "$XISO_ZIP" ]]; then curl -sSL -o "$XISO_ZIP" "$XISO_URL"; fi
+if [[ ! -f "$XISO_ZIP" ]]; then curl -fSL -o "$XISO_ZIP" "$XISO_URL"; fi
 if [[ "$(shasum -a 256 "$XISO_ZIP" | awk '{print $1}')" != "$XISO_SHA" ]]; then
-  echo "extract-xiso checksum mismatch; remove $XISO_ZIP and retry." >&2; exit 1
+  echo "extract-xiso checksum mismatch; deleting $XISO_ZIP so the next run retries." >&2
+  rm -f "$XISO_ZIP"
+  exit 1
 fi
 echo "extract-xiso archive verified (used automatically by setup when given an ISO)."
 

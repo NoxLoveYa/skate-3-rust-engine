@@ -16,7 +16,7 @@ fi
 # as-is. (Passing the base itself fails with missing input.cfg.)
 ASSETS="$ROOT/assets"
 if [[ -f "$ASSETS/installation.json" ]]; then
-  INSTALL_DIR="$(python3 -c "import json; print(json.load(open('$ASSETS/installation.json'))['directory'])")"
+  INSTALL_DIR="$(ASSETS="$ASSETS" python3 -c "import json,os; print(json.load(open(os.environ['ASSETS']+'/installation.json'))['directory'])")"
   ASSETS="$ASSETS/$INSTALL_DIR/assets"
 fi
 
@@ -27,8 +27,8 @@ if [[ $# -gt 0 ]]; then
     *.skate) ARGS=(--assets "$ASSETS" --map "$1"); shift;;
     --*) ARGS=("$@"); set --;;
   esac
-  if [[ $# -gt 0 && "$1" == *.skate ]]; then ARGS+=(--map "$1"); fi
 fi
+if [[ $# -gt 0 && "${1:-}" == *.skate ]]; then ARGS+=(--map "$1"); fi
 
 mkdir -p logs
 LOG="logs/game-$(date +%Y%m%d-%H%M%S).log"

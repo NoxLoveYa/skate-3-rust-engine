@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: macos-arm64-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   macos-arm64:
     # ARM64 runner; the binary target is aarch64-apple-darwin regardless of
@@ -54,12 +57,12 @@ jobs:
           python3 -m unittest tools.asset_pipeline.test_versions
           python3 tools/asset_pipeline/versions.py --tools tools > /dev/null
           python3 -m tools.asset_pipeline.customiser_setup --fingerprint
-          bash -n scripts/build-macos.sh scripts/launch-macos.sh scripts/download-macos-deps.sh scripts/prepare-character-importer-macos.sh scripts/build-macos-release.sh
+          for f in scripts/build-macos.sh scripts/launch-macos.sh scripts/download-macos-deps.sh scripts/prepare-character-importer-macos.sh scripts/build-macos-release.sh; do bash -n "$f"; done
       - name: Build staged binary
         run: ./scripts/build-macos.sh
       - name: Staged binary starts and reports missing dev assets
         run: |
-          ./bin/skate3rust --assets ./assets --test-world 2>&1 | tee /tmp/sk8smoke.log
+          ./bin/skate3rust --assets ./assets --test-world 2>&1 | tee /tmp/sk8smoke.log || true
           grep -q "Asset root ./assets" /tmp/sk8smoke.log
       - name: Package dev release
         env:

@@ -150,7 +150,12 @@ impl AutoScale {
             self.over += 1;
             if self.over >= Self::DOWN_FRAMES {
                 self.over = 0;
-                let next = Self::index(self.effective).saturating_sub(1).max(Self::index(Self::MIN_SCALE));
+                // Never step below the floor, and never above the setting:
+                // a 25% user ceiling stays exactly there under pressure.
+                let next = Self::index(self.effective)
+                    .saturating_sub(1)
+                    .max(Self::index(Self::MIN_SCALE))
+                    .min(Self::index(user_scale));
                 if SCALES[next] != self.effective {
                     self.effective = SCALES[next];
                     return Some(self.effective);
@@ -994,6 +999,14 @@ mod auto_scale_tests {
             assert_eq!(cold.update(Some(200.0), 100, false), None);
         }
         assert_eq!(cold.effective(100), 100);
+    }
+    #[test]
+    fn user_ceiling_below_floor_never_moves() {
+        let mut auto = settled(25);
+        for _ in 0..2000 {
+            assert_eq!(auto.update(Some(40.0), 25, false), None);
+        }
+        assert_eq!(auto.effective(25), 25);
     }
     #[test]
     fn manual_changes_are_adopted_immediately() {

@@ -47,9 +47,10 @@ pub(crate) fn poll_controllers(mut input: ResMut<ControllerInput>,config:Res<cra
         } else {platform::poll_cached(slot, &mut capabilities[slot])}
     });
     // Padless fallback: synthesize slot 0 from the keyboard when the slot is
-    // locally owned but has no platform pad. Real pads always win; remote
+    // locally owned but has no usable platform pad (disconnected, failed
+    // backend, or poisoned state). Real pads always win; remote
     // net-filtered slots are untouched.
-    if matches!(samples[0], Err(platform::DeviceError::Disconnected)) && owned(0) {
+    if samples[0].is_err() && owned(0) {
         if let Some(packet) = keyboard::sample(&keys, &mut keyboard) { samples[0] = Ok(packet); }
     }
     input.collect(samples);

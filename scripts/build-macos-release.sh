@@ -17,6 +17,8 @@ export PATH="$HOME/.cargo/bin:$PATH"
 TAG="${RELEASE_TAG:-development}"
 BUILD="${GITHUB_RUN_NUMBER:-0}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
+# Fresh stage dir per run; prune previous ones so repeated runs don't leak disk.
+rm -rf "$ROOT/target/release-packages"
 STAGE="$ROOT/target/release-packages/$STAMP/skate3rust-macos-arm64"
 mkdir -p "$STAGE/support" "$STAGE/mods" "$STAGE/docs/images" "$STAGE/licenses"
 
@@ -45,11 +47,11 @@ if ! ./scripts/prepare-character-importer-macos.sh --dest "$STAGE/support"; then
 fi
 
 echo "==> mods, docs, licenses"
-cp -f mods/native-trainer.zip mods/mario-kart.zip mods/README.md "$STAGE/mods/" 2>/dev/null || true
+cp -f mods/native-trainer.zip mods/mario-kart.zip mods/README.md "$STAGE/mods/"
 cp -f README.md docs/THIRD_PARTY_NOTICES.md "$STAGE/"
 cp -f docs/images/skating-crab.png "$STAGE/docs/images/skating-crab.png"
 for doc in installation.md retail-renderer.md crash-reports.md performance-tracing.md updates.md custom-models.md mixamo-to-skate.md character-customisation.md macos.md; do
-  cp -f "docs/$doc" "$STAGE/docs/$doc" 2>/dev/null || true
+  cp -f "docs/$doc" "$STAGE/docs/$doc" 2>/dev/null || echo "WARNING: optional doc missing: docs/$doc" >&2
 done
 cp -f tools/mixamo_to_skate/licenses/FBX2glTF.txt "$STAGE/licenses/FBX2glTF.txt"
 cp -f tools/vendor/utt/LICENSE "$STAGE/licenses/UTT.txt"

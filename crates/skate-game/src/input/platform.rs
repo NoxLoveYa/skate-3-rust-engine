@@ -180,7 +180,11 @@ mod desktop {
     fn shared() -> Result<std::sync::MutexGuard<'static, Option<Shared>>, DeviceError> {
         static CELL: OnceLock<Mutex<Option<Shared>>> = OnceLock::new();
         let cell = CELL.get_or_init(|| {
-            Mutex::new(gilrs::Gilrs::new().ok().map(|gilrs| Shared {
+            // No gilrs input filters: sticks and triggers must reach the TU3
+            // converter raw, exactly like the Windows XInput bytes (Bevy's own
+            // gilrs plugin, which stays disabled, is a separate instance).
+            let gilrs = gilrs::GilrsBuilder::new().with_default_filters(false).build().ok();
+            Mutex::new(gilrs.map(|gilrs| Shared {
                 gilrs,
                 last: [(0, 0, 0, 0, 0, 0, 0); 4],
                 packet: [0; 4],
@@ -193,23 +197,27 @@ mod desktop {
         Ok(guard)
     }
 
-    fn axis_i16(value: f32) -> i16 {
+    pub(super) fn axis_i16(value: f32) -> i16 {
         (value.clamp(-1.0, 1.0) * 32767.0).round() as i16
     }
 
-    fn trigger_u8(value: f32) -> u8 {
+    pub(super) fn trigger_u8(value: f32) -> u8 {
         (value.clamp(0.0, 1.0) * 255.0).round() as u8
     }
 
     pub(super) fn poll(index: usize, _cache: &mut CapabilityCache) -> Result<DevicePacket, DeviceError> {
         // Sample the pad inside a scope so the gilrs borrow ends before we
-        // mutate packet counters below.
+        // mutate packet counters below. This takes and releases the lock
+        // twice per slot; at four slots per host frame the cost is noise
+        // next to a full Bevy schedule, and it keeps borrow scopes obvious.
         let current: (u16, u8, u8, i16, i16, i16, i16) = {
             let mut guard = shared()?;
             let shared = guard.as_mut().ok_or(DeviceError::UnsupportedPlatform)?;
             while shared.gilrs.next_event().is_some() {}
             // gilrs IDs are opaque handles, not 0..n slots. Map our 4 TU3 device
             // slots to the nth currently connected gamepad in enumeration order.
+            // Single-pad setups are unaffected; hot-swapping a second pad can
+            // renumber slots, matching gilrs semantics rather than XInput's.
             let id = shared.gilrs.gamepads().map(|(id, _)| id).nth(index).ok_or(DeviceError::Disconnected)?;
             let pad = shared.gilrs.gamepad(id);
             if !pad.is_connected() {
@@ -232,14 +240,13 @@ mod desktop {
             if pad.is_pressed(gilrs::Button::East) { buttons |= PAD_B; }
             if pad.is_pressed(gilrs::Button::West) { buttons |= PAD_X; }
             if pad.is_pressed(gilrs::Button::North) { buttons |= PAD_Y; }
-            // Prefer analog trigger axes when the backend exposes them; fall back
-            // to digital shoulder buttons so 2-position pads still kickflip.
-            // gilrs exposes triggers as LeftZ/RightZ axes (0..1) and as
-            // LeftTrigger2/RightTrigger2 buttons; axes give finer granularity.
-            let lt_raw = pad.value(gilrs::Axis::LeftZ);
-            let rt_raw = pad.value(gilrs::Axis::RightZ);
-            let lt = if lt_raw > 0.0005 { trigger_u8(lt_raw) } else if buttons & PAD_LEFT_SHOULDER != 0 { 255 } else { 0 };
-            let rt = if rt_raw > 0.0005 { trigger_u8(rt_raw) } else if buttons & PAD_RIGHT_SHOULDER != 0 { 255 } else { 0 };
+            // Analog trigger axes when the backend exposes them; the digital
+            // LeftTrigger2/RightTrigger2 buttons (not the LB/RB shoulders)
+            // cover 2-position pads so kickflips still work.
+            let lt = trigger_u8(pad.value(gilrs::Axis::LeftZ))
+                .max(if pad.is_pressed(gilrs::Button::LeftTrigger2) { 255 } else { 0 });
+            let rt = trigger_u8(pad.value(gilrs::Axis::RightZ))
+                .max(if pad.is_pressed(gilrs::Button::RightTrigger2) { 255 } else { 0 });
             let lx = axis_i16(pad.value(gilrs::Axis::LeftStickX));
             let ly = axis_i16(pad.value(gilrs::Axis::LeftStickY));
             let rx = axis_i16(pad.value(gilrs::Axis::RightStickX));
@@ -295,4 +302,21 @@ mod cache_tests {
 // Preserve the uncached API for menu-only polling.
 pub(crate) fn poll(index: usize) -> Result<DevicePacket, DeviceError> {
     poll_cached(index, &mut CapabilityCache::default())
+}
+
+#[cfg(all(test, not(windows)))]
+mod conversion_tests {
+    use super::desktop::{axis_i16, trigger_u8};
+    #[test]
+    fn raw_scaling_matches_the_xinput_abi() {
+        assert_eq!(axis_i16(-1.0), -32767);
+        assert_eq!(axis_i16(0.0), 0);
+        assert_eq!(axis_i16(1.0), 32767);
+        assert_eq!(axis_i16(2.0), 32767);
+        assert_eq!(axis_i16(-2.0), -32767);
+        assert_eq!(trigger_u8(0.0), 0);
+        assert_eq!(trigger_u8(1.0), 255);
+        assert_eq!(trigger_u8(2.0), 255);
+        assert_eq!(trigger_u8(-1.0), 0);
+    }
 }
