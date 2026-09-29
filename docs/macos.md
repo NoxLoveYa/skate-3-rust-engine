@@ -175,10 +175,19 @@ So the levers are quality settings, all already in the Esc menu:
 
 A comfortable M4 Pro setup is 1600×900 at 67% scale, MSAA 4x, 60 FPS cap
 (`settings/graphics.json` next to the installation). Want more headroom:
-MSAA 2x first, then render scale — do not touch occlusion. Fresh installs
-keep the upstream defaults (1280×800, 100%, MSAA 4x); changing shared
-defaults needs Windows-side A/B data, so macOS-specific defaults were
-deliberately not introduced.
+MSAA 2x first, then render scale — do not touch occlusion.
+
+On top of the knobs, the port adds an **automatic render-scale governor**
+(`AutoScale` in `graphics_menu.rs`): identical maximum pixels, stepping
+down one notch only after ~180 sustained frames over 22 ms, stepping back
+up after ~900 frames under 13 ms, floored at 50% and capped at the menu
+setting. Map loads, the 10-second warmup and invalid clocks only adopt
+the setting and never adapt, so loading hitches can never trigger a
+step-down; the reduced value never touches the save file and the Esc menu
+shows `[auto N%]` while engaged. Seven unit tests cover stepping, floor,
+recovery, oscillation immunity, warmup/load guards and manual overrides.
+Fresh installs keep the upstream defaults — the governor only ever
+reduces, and only under proven sustained pressure.
 
 ## Known macOS gaps (honest list)
 

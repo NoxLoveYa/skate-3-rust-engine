@@ -80,7 +80,98 @@ impl GraphicsSettings {
         self
     }
     fn internal_size(&self, window: UVec2) -> UVec2 {
-        (window * self.scale / 100).max(UVec2::ONE)
+        Self::scaled_size(window, self.scale)
+    }
+    fn scaled_size(window: UVec2, scale: u32) -> UVec2 {
+        (window * scale / 100).max(UVec2::ONE)
+    }
+}
+
+/// Automatic render-scale governor: identical maximum pixels, temporary dips
+/// only under sustained GPU pressure. The user's menu setting stays the
+/// ceiling and is the only thing that persists; the reduced value never
+/// touches the save file and always recovers when headroom returns.
+#[derive(Resource)]
+pub(crate) struct AutoScale {
+    avg_ms: f32,
+    over: u32,
+    under: u32,
+    effective: u32,
+    last_user: u32,
+    warmup: u32,
+}
+impl Default for AutoScale {
+    fn default() -> Self {
+        Self { avg_ms: 16.7, over: 0, under: 0, effective: 100, last_user: 0, warmup: 600 }
+    }
+}
+impl AutoScale {
+    const ALPHA: f32 = 0.05;
+    const DOWN_MS: f32 = 22.0;
+    const DOWN_FRAMES: u32 = 180;
+    const UP_MS: f32 = 13.0;
+    const UP_FRAMES: u32 = 900;
+    const MIN_SCALE: u32 = 50;
+
+    fn index(scale: u32) -> usize {
+        SCALES.iter().position(|s| *s == scale).unwrap_or(SCALES.len() - 1)
+    }
+
+    pub(crate) fn effective(&self, user_scale: u32) -> u32 {
+        self.effective.min(user_scale)
+    }
+
+    /// Advance one frame. Returns the new effective scale only when the
+    /// governor itself steps (for logging). Adopting a manual setting
+    /// change is silent. Map loads, the warmup window and missing/invalid
+    /// clocks only adopt and never adapt, so loading hitches can never
+    /// trigger a step-down.
+    pub(crate) fn update(&mut self, dt_ms: Option<f32>, user_scale: u32, busy: bool) -> Option<u32> {
+        if user_scale != self.last_user {
+            self.last_user = user_scale;
+            self.over = 0;
+            self.under = 0;
+            self.effective = user_scale;
+            return None;
+        }
+        let Some(dt) = dt_ms.filter(|dt| dt.is_finite() && *dt >= 0.0) else { return None; };
+        if busy {
+            self.over = 0;
+            self.under = 0;
+            return None;
+        }
+        if self.warmup > 0 {
+            self.warmup -= 1;
+            return None;
+        }
+        self.avg_ms += (dt - self.avg_ms) * Self::ALPHA;
+        if self.avg_ms > Self::DOWN_MS {
+            self.under = 0;
+            self.over += 1;
+            if self.over >= Self::DOWN_FRAMES {
+                self.over = 0;
+                let next = Self::index(self.effective).saturating_sub(1).max(Self::index(Self::MIN_SCALE));
+                if SCALES[next] != self.effective {
+                    self.effective = SCALES[next];
+                    return Some(self.effective);
+                }
+            }
+        } else if self.avg_ms < Self::UP_MS {
+            self.over = 0;
+            self.under += 1;
+            if self.under >= Self::UP_FRAMES {
+                self.under = 0;
+                let next = (Self::index(self.effective) + 1).min(Self::index(user_scale));
+                if SCALES[next] != self.effective {
+                    self.effective = SCALES[next];
+                    return Some(self.effective);
+                }
+            }
+        } else {
+            self.over = 0;
+            self.under = 0;
+        }
+        None
     }
 }
 #[derive(Resource)]
@@ -143,6 +234,7 @@ pub(crate) struct GraphicsMenuPlugin;
 impl Plugin for GraphicsMenuPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(FramePacer(Instant::now()))
+            .init_resource::<AutoScale>()
             .add_systems(PostStartup, setup.in_set(PresentationSetup))
             .add_systems(PreUpdate, interact.in_set(MenuInput).after(bevy::input::InputSystems))
             .add_systems(Update, (crate::map_render::advance_day, apply, labels).chain())
@@ -500,6 +592,9 @@ fn apply(
     mut images: ResMut<Assets<Image>>,
     mut cameras: Query<(Entity, &mut Msaa), With<Camera3d>>,
     mut previous: Local<Option<GraphicsSettings>>,
+    time: Option<Res<Time<Real>>>,
+    transition: Option<Res<crate::map_transition::MapTransition>>,
+    mut auto: Option<ResMut<AutoScale>>,
 ) {
     if previous
         .as_ref()
@@ -534,7 +629,15 @@ fn apply(
         }
         info!("GPU occlusion culling: {}", menu.settings.occlusion);
     }
-    let size = menu.settings.internal_size(window.physical_size());
+    let dt_ms = time.as_ref().map(|t| t.delta_secs() * 1000.0);
+    let busy = transition.as_ref().is_some_and(|t| t.busy());
+    if let Some(auto) = auto.as_mut() {
+        if let Some(scale) = auto.update(dt_ms, menu.settings.scale, busy) {
+            info!("Auto resolution: internal render scale {}% (setting {}%)", scale, menu.settings.scale);
+        }
+    }
+    let effective = auto.as_ref().map(|a| a.effective(menu.settings.scale)).unwrap_or(menu.settings.scale);
+    let size = GraphicsSettings::scaled_size(window.physical_size(), effective);
     if let Some(image) = images.get(&target.0) {
         if image.size() != size {
             images.get_mut(&target.0).unwrap().resize(Extent3d {
@@ -560,6 +663,7 @@ fn labels(
     mut labels: Query<(&MenuLabel, &mut Text), Without<StatusLabel>>,
     mut status: Single<&mut Text, With<StatusLabel>>,
     mut buttons: Query<(&MenuRow, &Interaction, &mut BackgroundColor, &mut Node), Without<MenuRoot>>,
+    auto_scale: Option<Res<AutoScale>>,
 ) {
     root.display = if menu.open && !mods.open && !travel.open && !customiser.open && !custom_models.open {
         Display::Flex
@@ -570,7 +674,8 @@ fn labels(
         return;
     }
     let s = &menu.settings;
-    let size = s.internal_size(window.physical_size());
+    let effective = auto_scale.as_ref().map(|a| a.effective(s.scale)).unwrap_or(s.scale);
+    let size = GraphicsSettings::scaled_size(window.physical_size(), effective);
     for (label, mut text) in &mut labels {
         **text = if menu.daylight {
             match label.0 {
@@ -631,10 +736,13 @@ fn labels(
         } else {
             match label.0 {
                 0 => format!("Resolution          {} x {}", s.width, s.height),
-                1 => format!(
-                    "Internal resolution   {}%  ({} x {})",
-                    s.scale, size.x, size.y
-                ),
+                1 => {
+                    if effective == s.scale {
+                        format!("Internal resolution   {}%  ({} x {})", s.scale, size.x, size.y)
+                    } else {
+                        format!("Internal resolution   {}%  ({} x {})  [auto {}%]", s.scale, size.x, size.y, effective)
+                    }
+                }
                 2 => format!(
                     "MSAA                {}",
                     if s.samples == 1 {
@@ -798,5 +906,101 @@ mod tests {
         assert_eq!(s.internal_size(UVec2::ZERO), UVec2::ONE);
         assert_eq!(cycle(LIMITS, 0, -1), 240);
         assert_eq!(cycle(LIMITS, 240, 1), 0);
+    }
+}
+
+#[cfg(test)]
+mod auto_scale_tests {
+    use super::*;
+    fn settled(user: u32) -> AutoScale {
+        let mut auto = AutoScale { warmup: 0, ..AutoScale::default() };
+        auto.update(Some(16.7), user, false);
+        assert_eq!(auto.effective(user), user);
+        auto
+    }
+    #[test]
+    fn steady_load_holds_maximum_pixels() {
+        let mut auto = settled(100);
+        for _ in 0..2000 {
+            assert_eq!(auto.update(Some(16.7), 100, false), None);
+        }
+        assert_eq!(auto.effective(100), 100);
+    }
+    #[test]
+    fn sustained_pressure_steps_down_and_floors_at_fifty() {
+        let mut auto = settled(100);
+        let mut stepped = None;
+        for _ in 0..400 {
+            if let Some(scale) = auto.update(Some(40.0), 100, false) {
+                stepped = Some(scale);
+                break;
+            }
+        }
+        assert_eq!(stepped, Some(85));
+        assert_eq!(auto.effective(100), 85);
+        for _ in 0..2000 {
+            auto.update(Some(40.0), 100, false);
+        }
+        assert_eq!(auto.effective(100), 50);
+        for _ in 0..2000 {
+            assert_eq!(auto.update(Some(40.0), 100, false), None);
+        }
+        assert_eq!(auto.effective(100), 50);
+    }
+    #[test]
+    fn headroom_recovers_stepwise_without_exceeding_the_setting() {
+        let mut auto = settled(85);
+        auto.effective = 50;
+        let mut stepped = None;
+        for _ in 0..1500 {
+            if let Some(scale) = auto.update(Some(8.0), 85, false) {
+                stepped = Some(scale);
+                break;
+            }
+        }
+        assert_eq!(stepped, Some(67));
+        for _ in 0..2500 {
+            auto.update(Some(8.0), 85, false);
+        }
+        assert_eq!(auto.effective(85), 85);
+        for _ in 0..2000 {
+            assert_eq!(auto.update(Some(8.0), 85, false), None);
+        }
+        assert_eq!(auto.effective(85), 85);
+    }
+    #[test]
+    fn oscillation_around_thresholds_never_steps() {
+        let mut auto = settled(100);
+        for _ in 0..2000 {
+            auto.update(Some(25.0), 100, false);
+            auto.update(Some(10.0), 100, false);
+        }
+        assert_eq!(auto.effective(100), 100);
+    }
+    #[test]
+    fn loads_warmup_and_bad_clocks_only_adopt() {
+        let mut auto = AutoScale::default();
+        assert_eq!(auto.update(None, 100, false), None);
+        assert_eq!(auto.effective(100), 100);
+        assert_eq!(auto.update(Some(f32::NAN), 100, false), None);
+        assert_eq!(auto.update(Some(f32::INFINITY), 100, false), None);
+        let mut loading = settled(100);
+        for _ in 0..2000 {
+            assert_eq!(loading.update(Some(200.0), 100, true), None);
+        }
+        assert_eq!(loading.effective(100), 100);
+        let mut cold = AutoScale::default();
+        for _ in 0..500 {
+            assert_eq!(cold.update(Some(200.0), 100, false), None);
+        }
+        assert_eq!(cold.effective(100), 100);
+    }
+    #[test]
+    fn manual_changes_are_adopted_immediately() {
+        let mut auto = settled(100);
+        auto.effective = 67;
+        assert_eq!(auto.update(Some(16.7), 75, false), None);
+        assert_eq!(auto.effective(75), 75);
+        assert_eq!(auto.update(Some(16.7), 75, false), None);
     }
 }
