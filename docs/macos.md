@@ -149,6 +149,25 @@ via Rosetta 2 (the script installs Rosetta if missing).
   locally under system Python 3.9 it errors on `hashlib.file_digest`
   (3.11+ API) — another reason the project pins 3.13.
 
+## Benchmarking (repeatable)
+
+`scripts/bench-macos.sh [seconds=20] [map.skate]` runs a deterministic
+spawn-idle capture with no input and prints frame stats plus the top CPU
+spans — same spawn and settings every run, so numbers are A/B-comparable
+across engine or settings changes:
+
+```text
+frames : 619
+mean   : 19.41 ms  (52 FPS)
+p50    : 19.95 ms  (50 FPS)
+p95    : 23.54 ms  (42 FPS)
+p99    : 26.38 ms  max 27.55 ms
+```
+
+(Example: University spawn, 1600×900 at 67%, MSAA 4x, 60 FPS cap.)
+Compare `p50` for typical speed and `p95` for hitch behavior; re-run
+before/after any change on the same map.
+
 ## Metal performance: measured, then tuned
 
 A 30-second unattended capture (`--trace … --trace-delay 15
