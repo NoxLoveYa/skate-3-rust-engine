@@ -7,7 +7,7 @@ use bevy::{
     render::{
         render_resource::{Extent3d, TextureFormat},
     },
-    window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode},
+    window::{MonitorSelection, PresentMode, PrimaryWindow, VideoModeSelection, WindowMode},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -39,7 +39,11 @@ struct GraphicsSettings {
     hour: f32,
     day_speed: u32,
     ambient_level: Option<u32>,
+    /// 0 = windowed, 1 = borderless fullscreen, 2 = exclusive fullscreen.
+    display_mode: u8,
 }
+/// Display-mode labels indexed by `GraphicsSettings::display_mode`.
+const DISPLAY_MODES: &[&str] = &["Windowed", "Borderless", "Fullscreen"];
 impl Default for GraphicsSettings {
     fn default() -> Self {
         Self {
@@ -50,6 +54,7 @@ impl Default for GraphicsSettings {
             hour: 12.,
             day_speed: 60,
             ambient_level: None,
+            display_mode: 0,
         }
     }
 }
@@ -66,6 +71,9 @@ impl GraphicsSettings {
         }
         if !LIMITS.contains(&self.fps) {
             self.fps = 0;
+        }
+        if self.display_mode > 2 {
+            self.display_mode = 0;
         }
         self
     }
@@ -242,7 +250,7 @@ impl Menu {
             }
             0 => (1000..1000 + self.maps.len()).collect(),
             1 => vec![3, 8, 10],
-            2 => vec![0, 1, 2, 13],
+            2 => vec![0, 1, 2, 4, 13],
             4 => vec![7, 11, 14],
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
@@ -318,9 +326,7 @@ fn setup(
         Err(_) => GraphicsSettings::default(),
     }
     .validated();
-    window
-        .resolution
-        .set_physical_resolution(settings.width, settings.height);
+    apply_display_mode(&mut window, &settings);
     window.present_mode = PresentMode::AutoNoVsync;
     let size = settings.internal_size(window.physical_size());
     let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None);
@@ -504,7 +510,10 @@ pub(crate) fn interact(
         if keys.just_pressed(KeyCode::ArrowDown) || nav.pressed & 2 != 0 {
             menu.selected = visible[(index + 1) % rows];
         }
-        let adjustable = (menu.daylight && menu.selected < 3) || (!menu.multiplayer && !menu.daylight && menu.selected < 4);
+        let adjustable = (menu.daylight && menu.selected < 3)
+            || (!menu.multiplayer
+                && !menu.daylight
+                && (menu.selected < 4 || (menu.section == 2 && menu.selected == 4)));
         if adjustable && (keys.just_pressed(KeyCode::ArrowLeft) || nav.pressed & 4 != 0) {
             action = Some((menu.selected, -1));
         }
@@ -637,6 +646,10 @@ pub(crate) fn interact(
                 }
                 1 => menu.settings.scale = cycle(SCALES, menu.settings.scale, direction),
                 2 => menu.settings.fps = cycle(LIMITS, menu.settings.fps, direction),
+                4 => {
+                    menu.settings.display_mode =
+                        (menu.settings.display_mode as i32 + direction).rem_euclid(3) as u8;
+                }
                 3 => {
                     menu.difficulty = cycle(&Difficulty::ALL, menu.difficulty, direction);
                     physics.set_difficulty(menu.difficulty);
@@ -668,15 +681,8 @@ pub(crate) fn interact(
                 _ => {}
             }
         }
-        if (row < 3 && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
-            let save = (|| -> Result<(), String> {
-                std::fs::create_dir_all(menu.path.parent().unwrap()).map_err(|e| e.to_string())?;
-                std::fs::write(
-                    &menu.path,
-                    serde_json::to_vec_pretty(&menu.settings).map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())
-            })();
+        if ((row < 3 || row == 4) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
+            let save = save_settings(&menu);
             menu.status = match save {
                 Ok(()) => "Saved".into(),
                 Err(e) => format!("Could not save: {e}"),
@@ -691,7 +697,7 @@ pub(crate) fn interact(
 }
 fn toggle_fullscreen(
     keys: Res<ButtonInput<KeyCode>>,
-    menu: Res<Menu>,
+    mut menu: ResMut<Menu>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
 ) {
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
@@ -701,14 +707,47 @@ fn toggle_fullscreen(
     match window.mode {
         WindowMode::Windowed => {
             window.mode = WindowMode::BorderlessFullscreen(MonitorSelection::Primary);
+            menu.settings.display_mode = 1;
         }
         WindowMode::BorderlessFullscreen(_) | WindowMode::Fullscreen(_, _) => {
             window.mode = WindowMode::Windowed;
             window
                 .resolution
                 .set_physical_resolution(menu.settings.width, menu.settings.height);
+            menu.settings.display_mode = 0;
         }
     }
+    menu.status = match save_settings(&menu) {
+        Ok(()) => "Saved".into(),
+        Err(e) => format!("Could not save: {e}"),
+    };
+}
+/// Apply the saved display mode to the window. Exclusive fullscreen keeps the
+/// monitor's current video mode; returning to windowed restores the saved size.
+fn apply_display_mode(window: &mut Window, settings: &GraphicsSettings) {
+    match settings.display_mode {
+        2 => {
+            window.mode =
+                WindowMode::Fullscreen(MonitorSelection::Primary, VideoModeSelection::Current);
+        }
+        1 => {
+            window.mode = WindowMode::BorderlessFullscreen(MonitorSelection::Primary);
+        }
+        _ => {
+            window.mode = WindowMode::Windowed;
+            window
+                .resolution
+                .set_physical_resolution(settings.width, settings.height);
+        }
+    }
+}
+fn save_settings(menu: &Menu) -> Result<(), String> {
+    std::fs::create_dir_all(menu.path.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(
+        &menu.path,
+        serde_json::to_vec_pretty(&menu.settings).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 fn apply(
     menu: Res<Menu>,
@@ -717,14 +756,12 @@ fn apply(
     mut images: ResMut<Assets<Image>>,
     mut previous: Local<Option<GraphicsSettings>>,
 ) {
-    if window.mode == WindowMode::Windowed
-        && previous
-            .as_ref()
-            .is_none_or(|p| p.width != menu.settings.width || p.height != menu.settings.height)
-    {
-        window
-            .resolution
-            .set_physical_resolution(menu.settings.width, menu.settings.height);
+    if previous.as_ref().is_none_or(|p| {
+        p.display_mode != menu.settings.display_mode
+            || p.width != menu.settings.width
+            || p.height != menu.settings.height
+    }) {
+        apply_display_mode(&mut window, &menu.settings);
     }
     let size = menu.settings.internal_size(window.physical_size());
     if let Some(image) = images.get(&target.0) {
@@ -884,6 +921,12 @@ fn labels(
                     } else {
                         s.fps.to_string()
                     }
+                ),
+                4 => format!(
+                    "Display mode          {}",
+                    DISPLAY_MODES
+                        .get(s.display_mode as usize)
+                        .unwrap_or(&"Windowed")
                 ),
                 3 => format!("Difficulty            {}", menu.difficulty.label()),
                 6 => "Resume".into(),
@@ -1122,7 +1165,7 @@ mod tests {
         assert!(!SECTIONS.iter().any(|(name,_)| matches!(*name,"SESSION"|"WORLD")));
         menu.select_section(2);
         assert!(!menu.multiplayer && !menu.browser);
-        assert_eq!(menu.rows(), vec![0,1,2,13]);
+        assert_eq!(menu.rows(), vec![0, 1, 2, 4, 13]);
         menu.daylight = true;
         assert_eq!(menu.rows(), vec![0,1,2,3]);
     }
@@ -1132,6 +1175,43 @@ mod tests {
             serde_json::from_str(r#"{"width":0,"height":999999,"scale":0,"fps":1}"#)
                 .unwrap();
         assert_eq!(settings.validated(), GraphicsSettings::default());
+        let settings: GraphicsSettings =
+            serde_json::from_str(r#"{"display_mode":9}"#).unwrap();
+        assert_eq!(settings.validated(), GraphicsSettings::default());
+    }
+    #[test]
+    fn display_mode_cycles_and_applies() {
+        assert_eq!(DISPLAY_MODES, &["Windowed", "Borderless", "Fullscreen"]);
+        let mut settings = GraphicsSettings::default();
+        assert_eq!(settings.display_mode, 0);
+        for (mode, _) in DISPLAY_MODES.iter().enumerate() {
+            settings.display_mode = mode as u8;
+            let mut window = Window::default();
+            apply_display_mode(&mut window, &settings);
+            match mode {
+                0 => {
+                    assert_eq!(window.mode, WindowMode::Windowed);
+                    assert_eq!(
+                        (window.physical_width(), window.physical_height()),
+                        (settings.width, settings.height)
+                    );
+                }
+                1 => assert!(matches!(
+                    window.mode,
+                    WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
+                )),
+                _ => assert!(matches!(
+                    window.mode,
+                    WindowMode::Fullscreen(
+                        MonitorSelection::Primary,
+                        VideoModeSelection::Current
+                    )
+                )),
+            }
+        }
+        // Manual cycling wraps in both directions.
+        assert_eq!((0i32 + 1).rem_euclid(3), 1);
+        assert_eq!((0i32 - 1).rem_euclid(3), 2);
     }
     #[test]
     fn scaled_target_and_cycle_boundaries() {
