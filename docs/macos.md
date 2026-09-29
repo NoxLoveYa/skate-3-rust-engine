@@ -148,6 +148,38 @@ via Rosetta 2 (the script installs Rosetta if missing).
   locally under system Python 3.9 it errors on `hashlib.file_digest`
   (3.11+ API) — another reason the project pins 3.13.
 
+## Metal performance: measured, then tuned
+
+A 30-second unattended capture (`--trace … --trace-delay 15
+--trace-seconds 30`, University spawn, no input) analyzed with
+`tools/analyse_performance_trace.py` says the port is **GPU-bound with a
+lean CPU side** — there is no Metal-specific code defect to fix:
+
+- Frame intervals: p50 **16.9 ms** (59 FPS), p95 29.8 ms, p99 36.0 ms.
+- Gameplay CPU (`Main` schedule) p50 is **0.29 ms** — physics, animation
+  and game logic are essentially free. The top CPU spans are all renderer
+  command recording (`render_system` 12.2 ms, `command_buffer_generation`
+  10.3 ms, `main_opaque_pass_3d` 10.0 ms) for a 1.6M-triangle retail scene.
+- `AdapterInfo` reports the M4 Pro on the Metal backend with GPU
+  preprocessing fully supported and occlusion culling active.
+
+So the levers are quality settings, all already in the Esc menu:
+
+| Knob | Cost driver | Note |
+|---|---|---|
+| MSAA (`samples`: 1/2/4/8) | Fragment + resolve bandwidth | Biggest single lever; 4x is the default |
+| Render scale (`scale`: 25–100%) | Everything, roughly quadratically | 67% at 1600×900 ≈ 1072×603 internal |
+| Window resolution | Linear in pixels | 1280×800 default is cheapest |
+| FPS cap (`fps`: 0/30/…/240) | Power/heat, pacing | `0` = uncapped (max CPU/GPU burn) |
+| Occlusion culling | Saves GPU in dense districts | Keep on (default) |
+
+A comfortable M4 Pro setup is 1600×900 at 67% scale, MSAA 4x, 60 FPS cap
+(`settings/graphics.json` next to the installation). Want more headroom:
+MSAA 2x first, then render scale — do not touch occlusion. Fresh installs
+keep the upstream defaults (1280×800, 100%, MSAA 4x); changing shared
+defaults needs Windows-side A/B data, so macOS-specific defaults were
+deliberately not introduced.
+
 ## Known macOS gaps (honest list)
 
 - **Steam lobbies**: `skate-steam-relay` compiles on macOS in principle
