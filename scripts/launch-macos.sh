@@ -32,6 +32,6 @@ fi
 
 mkdir -p logs
 LOG="logs/game-$(date +%Y%m%d-%H%M%S).log"
-echo "Starting Skate 3 Rust Engine (Metal). Use any SDL-compatible controller; Esc opens menus."
+echo "Starting Skate 3 Rust Engine (Metal). Controller, or keyboard (see docs/macos.md); Esc opens menus."
 echo "Log: $LOG"
 "$EXE" "${ARGS[@]}" 2>&1 | tee "$LOG"

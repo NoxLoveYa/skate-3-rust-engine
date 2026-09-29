@@ -43,9 +43,26 @@ Provide your own: either an `.iso` or (recommended, skips extraction) an
 already-extracted folder containing `default.xex` + `data/`. Game assets are
 never downloaded and never included.
 
-You also need an Xbox/PlayStation/8BitDo-style pad. macOS exposes pads via
-HID; `gilrs` reads them without drivers. Keyboard-only play is **not**
-supported — the engine consumes raw pad packets.
+You also need an Xbox/PlayStation/8BitDo-style pad — or nothing at all:
+macOS exposes pads via HID and `gilrs` reads them without drivers, and a
+built-in **keyboard fallback** synthesizes pad packets when slot 0 has no
+controller (real pads always win; net-filtered slots are untouched).
+
+## Keyboard controls
+
+Sticks are digital (full deflection), so flicks work but analog finesse
+does not. Menus work through the same pipeline (Esc opens/closes them).
+
+| Input | Key |
+|---|---|
+| Left stick (push/steer) | `W` `A` `S` `D` |
+| Right stick (flick-it tricks) | Arrow keys |
+| A / B / X / Y | `Space` / `J` / `K` / `L` |
+| LB / RB (shoulder) | `Q` / `E` |
+| LT / RT (triggers, full pull) | `Z` / `C` |
+| DPad up/left/down/right | `T` / `F` / `G` / `H` |
+| Start / Back | `Enter` / `Backspace` |
+| Left / right stick click | `R` / `V` |
 
 ## Build
 

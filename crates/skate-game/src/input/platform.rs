@@ -20,6 +20,23 @@ pub(crate) enum DeviceError {
     UnsupportedPlatform,
 }
 
+/// XInput button bits (Xinput.h). Shared by the gilrs transport and the
+/// keyboard fallback so both speak the same ABI to the TU3 converter.
+pub(crate) const PAD_DPAD_UP: u16 = 0x0001;
+pub(crate) const PAD_DPAD_DOWN: u16 = 0x0002;
+pub(crate) const PAD_DPAD_LEFT: u16 = 0x0004;
+pub(crate) const PAD_DPAD_RIGHT: u16 = 0x0008;
+pub(crate) const PAD_START: u16 = 0x0010;
+pub(crate) const PAD_BACK: u16 = 0x0020;
+pub(crate) const PAD_LEFT_THUMB: u16 = 0x0040;
+pub(crate) const PAD_RIGHT_THUMB: u16 = 0x0080;
+pub(crate) const PAD_LEFT_SHOULDER: u16 = 0x0100;
+pub(crate) const PAD_RIGHT_SHOULDER: u16 = 0x0200;
+pub(crate) const PAD_A: u16 = 0x1000;
+pub(crate) const PAD_B: u16 = 0x2000;
+pub(crate) const PAD_X: u16 = 0x4000;
+pub(crate) const PAD_Y: u16 = 0x8000;
+
 /// Device identity is metadata; raw input is still sampled every host frame.
 /// Refresh periodically as well as after errors, so hot swaps cannot leave a
 /// subtype cached indefinitely even if Windows never exposes a disconnect.
@@ -154,22 +171,6 @@ mod desktop {
     use super::*;
     use std::sync::{Mutex, OnceLock};
 
-    // XInput button bits (Xinput.h).
-    const DPAD_UP: u16 = 0x0001;
-    const DPAD_DOWN: u16 = 0x0002;
-    const DPAD_LEFT: u16 = 0x0004;
-    const DPAD_RIGHT: u16 = 0x0008;
-    const START: u16 = 0x0010;
-    const BACK: u16 = 0x0020;
-    const LEFT_THUMB: u16 = 0x0040;
-    const RIGHT_THUMB: u16 = 0x0080;
-    const LEFT_SHOULDER: u16 = 0x0100;
-    const RIGHT_SHOULDER: u16 = 0x0200;
-    const BTN_A: u16 = 0x1000;
-    const BTN_B: u16 = 0x2000;
-    const BTN_X: u16 = 0x4000;
-    const BTN_Y: u16 = 0x8000;
-
     struct Shared {
         gilrs: gilrs::Gilrs,
         last: [(u16, u8, u8, i16, i16, i16, i16); 4],
@@ -217,28 +218,28 @@ mod desktop {
             // Use the high-level Gamepad API (Button/Axis mapping). The raw
             // GamepadState API takes low-level Codes instead.
             let mut buttons: u16 = 0;
-            if pad.is_pressed(gilrs::Button::DPadUp) { buttons |= DPAD_UP; }
-            if pad.is_pressed(gilrs::Button::DPadDown) { buttons |= DPAD_DOWN; }
-            if pad.is_pressed(gilrs::Button::DPadLeft) { buttons |= DPAD_LEFT; }
-            if pad.is_pressed(gilrs::Button::DPadRight) { buttons |= DPAD_RIGHT; }
-            if pad.is_pressed(gilrs::Button::Start) { buttons |= START; }
-            if pad.is_pressed(gilrs::Button::Select) { buttons |= BACK; }
-            if pad.is_pressed(gilrs::Button::LeftThumb) { buttons |= LEFT_THUMB; }
-            if pad.is_pressed(gilrs::Button::RightThumb) { buttons |= RIGHT_THUMB; }
-            if pad.is_pressed(gilrs::Button::LeftTrigger) { buttons |= LEFT_SHOULDER; }
-            if pad.is_pressed(gilrs::Button::RightTrigger) { buttons |= RIGHT_SHOULDER; }
-            if pad.is_pressed(gilrs::Button::South) { buttons |= BTN_A; }
-            if pad.is_pressed(gilrs::Button::East) { buttons |= BTN_B; }
-            if pad.is_pressed(gilrs::Button::West) { buttons |= BTN_X; }
-            if pad.is_pressed(gilrs::Button::North) { buttons |= BTN_Y; }
+            if pad.is_pressed(gilrs::Button::DPadUp) { buttons |= PAD_DPAD_UP; }
+            if pad.is_pressed(gilrs::Button::DPadDown) { buttons |= PAD_DPAD_DOWN; }
+            if pad.is_pressed(gilrs::Button::DPadLeft) { buttons |= PAD_DPAD_LEFT; }
+            if pad.is_pressed(gilrs::Button::DPadRight) { buttons |= PAD_DPAD_RIGHT; }
+            if pad.is_pressed(gilrs::Button::Start) { buttons |= PAD_START; }
+            if pad.is_pressed(gilrs::Button::Select) { buttons |= PAD_BACK; }
+            if pad.is_pressed(gilrs::Button::LeftThumb) { buttons |= PAD_LEFT_THUMB; }
+            if pad.is_pressed(gilrs::Button::RightThumb) { buttons |= PAD_RIGHT_THUMB; }
+            if pad.is_pressed(gilrs::Button::LeftTrigger) { buttons |= PAD_LEFT_SHOULDER; }
+            if pad.is_pressed(gilrs::Button::RightTrigger) { buttons |= PAD_RIGHT_SHOULDER; }
+            if pad.is_pressed(gilrs::Button::South) { buttons |= PAD_A; }
+            if pad.is_pressed(gilrs::Button::East) { buttons |= PAD_B; }
+            if pad.is_pressed(gilrs::Button::West) { buttons |= PAD_X; }
+            if pad.is_pressed(gilrs::Button::North) { buttons |= PAD_Y; }
             // Prefer analog trigger axes when the backend exposes them; fall back
             // to digital shoulder buttons so 2-position pads still kickflip.
             // gilrs exposes triggers as LeftZ/RightZ axes (0..1) and as
             // LeftTrigger2/RightTrigger2 buttons; axes give finer granularity.
             let lt_raw = pad.value(gilrs::Axis::LeftZ);
             let rt_raw = pad.value(gilrs::Axis::RightZ);
-            let lt = if lt_raw > 0.0005 { trigger_u8(lt_raw) } else if buttons & LEFT_SHOULDER != 0 { 255 } else { 0 };
-            let rt = if rt_raw > 0.0005 { trigger_u8(rt_raw) } else if buttons & RIGHT_SHOULDER != 0 { 255 } else { 0 };
+            let lt = if lt_raw > 0.0005 { trigger_u8(lt_raw) } else if buttons & PAD_LEFT_SHOULDER != 0 { 255 } else { 0 };
+            let rt = if rt_raw > 0.0005 { trigger_u8(rt_raw) } else if buttons & PAD_RIGHT_SHOULDER != 0 { 255 } else { 0 };
             let lx = axis_i16(pad.value(gilrs::Axis::LeftStickX));
             let ly = axis_i16(pad.value(gilrs::Axis::LeftStickY));
             let rx = axis_i16(pad.value(gilrs::Axis::RightStickX));
