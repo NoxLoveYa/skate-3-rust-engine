@@ -1,5 +1,7 @@
 # macOS (Apple Silicon MacBook) port
 
+![Skater on the board at University, rendered on Metal (47 FPS on M4 Pro)](images/macos-university.png)
+
 Tested target: Apple Silicon MacBook (M1/M2/M3/M4), macOS 14+, `aarch64-apple-darwin`.
 Intel Macs should also build (`x86_64-apple-darwin`) but are untested.
 
