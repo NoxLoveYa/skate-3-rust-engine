@@ -196,6 +196,9 @@ fn vulkan_shadow_pipeline_probe() {
 fn gpu_probe(prepass: bool) {
     bevy::tasks::block_on(async {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            #[cfg(target_os = "macos")]
+            backends: wgpu::Backends::METAL,
+            #[cfg(not(target_os = "macos"))]
             backends: wgpu::Backends::VULKAN,
             ..Default::default()
         });

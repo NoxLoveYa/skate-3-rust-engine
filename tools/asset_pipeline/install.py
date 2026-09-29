@@ -19,8 +19,15 @@ def map_workers():
             # briefly hold several copies of geometry and textures.
             count=min(count,max(1,(memory.available-2*1024**3)//(3*1024**3)))
     return count
-XISO_URL='https://github.com/XboxDev/extract-xiso/releases/download/build-202505152050/extract-xiso-Win64_Release.zip'
-XISO_SHA='fec88d03c7efd6205ab09be4abba70c0afd0eb27a5709f0a6235b828ba5ac11e'
+XISO_URLS = {
+    # XboxDev publishes per-OS extract-xiso builds. macOS players should prefer
+    # an already-extracted folder (select default.xex) to skip this download.
+    'win32': ('https://github.com/XboxDev/extract-xiso/releases/download/build-202505152050/extract-xiso-Win64_Release.zip',
+              'fec88d03c7efd6205ab09be4abba70c0afd0eb27a5709f0a6235b828ba5ac11e'),
+}
+XISO_URL, XISO_SHA = XISO_URLS.get(sys.platform, XISO_URLS['win32'])
+# Toolchain note: on macOS/Linux the extractor binary inside the ZIP is
+# extension-less (`extract-xiso`); on Windows it is `extract-xiso.exe`.
 
 def digest(path):
     with path.open('rb') as f:return hashlib.file_digest(f,'sha256').hexdigest()
@@ -59,8 +66,11 @@ def dependency(cache,name,url,sha,report):
     if not marker.is_file():
         unpack_zip(download(url,sha,cache,report),folder)
         marker.write_text(sha)
-    executable=next(folder.rglob(name+'.exe'),None)
-    if executable is None:raise RuntimeError('Missing downloaded tool: '+name)
+    # Windows ships `name.exe`; macOS/Linux ship extension-less `name`.
+    executable=next(folder.rglob(name+'.exe'),None) or next(folder.rglob(name),None)
+    if executable is None or executable.is_dir():raise RuntimeError('Missing downloaded tool: '+name)
+    if os.name != 'nt':
+        executable.chmod(executable.stat().st_mode | 0o111)
     return executable
 
 def run(args,log,report):

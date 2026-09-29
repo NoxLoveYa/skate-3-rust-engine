@@ -47,7 +47,7 @@ pub(crate) fn poll_controllers(mut input: ResMut<ControllerInput>,config:Res<cra
     for (index, (&before, &after)) in previous.iter().zip(&input.status).enumerate() {
         if before != after {
             match after {
-                ControllerStatus::Ready => info!("Controller {index}: raw XInput ready"),
+                ControllerStatus::Ready => info!("Controller {index}: raw platform pad ready"),
                 ControllerStatus::Unavailable(platform::DeviceError::Disconnected) => {
                     info!("Controller {index}: disconnected");
                 }

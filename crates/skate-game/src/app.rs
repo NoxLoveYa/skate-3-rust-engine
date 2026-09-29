@@ -42,8 +42,7 @@ pub(crate) fn build(
     crate::custom_models::register_source(&mut app);
     app.register_asset_source("mods", bevy::asset::io::AssetSourceBuilder::platform_default(
         &crate::modding::package_root().to_string_lossy(), None));
-    app.add_plugins(
-        DefaultPlugins
+    let plugins = DefaultPlugins
             .set(AssetPlugin {
                 file_path: config.asset_root.to_string_lossy().into_owned(),
                 ..default()
@@ -58,6 +57,12 @@ pub(crate) fn build(
             })
             .set(RenderPlugin {
                 render_creation: RenderCreation::Automatic(WgpuSettings {
+                    // Windows builds pin Vulkan for the retail renderer probe.
+                    // macOS has no native Vulkan; Metal is the only production
+                    // backend on Apple Silicon MacBooks (MoltenVK is not used).
+                    #[cfg(target_os = "macos")]
+                    backends: Some(Backends::METAL),
+                    #[cfg(not(target_os = "macos"))]
                     backends: Some(Backends::VULKAN),
                     // Existing machine's validation layer rejects wgpu atomic shaders.
                     // This workaround belongs only to the rendering adapter.
@@ -65,12 +70,15 @@ pub(crate) fn build(
                     ..default()
                 }),
                 ..default()
-            }).build().disable::<bevy::log::LogPlugin>()
-            // Gameplay and menu navigation both use raw XInput. No game system
-            // consumes Bevy gamepad events/rumble; its second device backend can
-            // stall PreUpdate (70.68 ms in the University capture).
-            .disable::<bevy::gilrs::GilrsPlugin>(),
-    )
+            }).build().disable::<bevy::log::LogPlugin>();
+    // Gameplay and menu navigation both use raw platform input. No game system
+    // consumes Bevy gamepad events/rumble; its second device backend can stall
+    // PreUpdate on Windows (70.68 ms in the University capture). Keep it
+    // disabled on Windows where XInput owns the pads; on macOS the gilrs
+    // backend IS the pad source (see input::platform), so it must stay enabled.
+    #[cfg(windows)]
+    let plugins = plugins.disable::<bevy::gilrs::GilrsPlugin>();
+    app.add_plugins(plugins)
     .insert_resource(bevy::winit::WinitSettings {focused_mode:bevy::winit::UpdateMode::Continuous,unfocused_mode:bevy::winit::UpdateMode::Continuous})
     .insert_resource(config)
     .insert_resource(crate::retail_render::RetailScene(retail_scene))

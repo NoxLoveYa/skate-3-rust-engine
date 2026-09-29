@@ -1,5 +1,8 @@
-//! Windows device transport. Raw signed axes/trigger bytes reach the TU3
+//! Device transport. Raw signed axes/trigger bytes reach the TU3
 //! converter without Bevy/gilrs deadzones or normalized-axis reconstruction.
+//! Windows uses XInput directly; macOS/Linux use gilrs (same backend Bevy
+//! uses) polled synchronously so the native Pad edge/repeat behavior is
+//! preserved on every host frame.
 use skate_core::input::xbox::XboxState;
 
 pub(crate) struct DevicePacket {
@@ -13,7 +16,6 @@ pub(crate) enum DeviceError {
     Disconnected,
     State(u32),
     Capabilities(u32),
-    #[cfg(not(windows))]
     UnsupportedPlatform,
 }
 
@@ -138,7 +140,125 @@ pub(crate) fn poll_cached(
     #[cfg(windows)]
     return windows::poll(index as u32, cache);
     #[cfg(not(windows))]
-    Err(DeviceError::UnsupportedPlatform)
+    return desktop::poll(index, cache);
+}
+
+/// gilrs-backed transport for macOS/Linux. Maps the standard gilrs layout to
+/// the XInput ABI the TU3 converter expects, without deadzones or curve
+/// reconstruction: raw -1..1 sticks scale linearly to i16, 0..1 triggers to
+/// u8, buttons to XInput bit positions. Packet numbers synthesize the XInput
+/// behavior of incrementing only when the raw bytes change.
+#[cfg(not(windows))]
+mod desktop {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    // XInput button bits (Xinput.h).
+    const DPAD_UP: u16 = 0x0001;
+    const DPAD_DOWN: u16 = 0x0002;
+    const DPAD_LEFT: u16 = 0x0004;
+    const DPAD_RIGHT: u16 = 0x0008;
+    const START: u16 = 0x0010;
+    const BACK: u16 = 0x0020;
+    const LEFT_THUMB: u16 = 0x0040;
+    const RIGHT_THUMB: u16 = 0x0080;
+    const LEFT_SHOULDER: u16 = 0x0100;
+    const RIGHT_SHOULDER: u16 = 0x0200;
+    const BTN_A: u16 = 0x1000;
+    const BTN_B: u16 = 0x2000;
+    const BTN_X: u16 = 0x4000;
+    const BTN_Y: u16 = 0x8000;
+
+    struct Shared {
+        gilrs: gilrs::Gilrs,
+        last: [(u16, u8, u8, i16, i16, i16, i16); 4],
+        packet: [u32; 4],
+    }
+
+    fn shared() -> Result<std::sync::MutexGuard<'static, Option<Shared>>, DeviceError> {
+        static CELL: OnceLock<Mutex<Option<Shared>>> = OnceLock::new();
+        let cell = CELL.get_or_init(|| {
+            Mutex::new(gilrs::Gilrs::new().ok().map(|gilrs| Shared {
+                gilrs,
+                last: [(0, 0, 0, 0, 0, 0, 0); 4],
+                packet: [0; 4],
+            }))
+        });
+        let guard = cell.lock().map_err(|_| DeviceError::State(1))?;
+        if guard.is_none() {
+            return Err(DeviceError::UnsupportedPlatform);
+        }
+        Ok(guard)
+    }
+
+    fn axis_i16(value: f32) -> i16 {
+        (value.clamp(-1.0, 1.0) * 32767.0).round() as i16
+    }
+
+    fn trigger_u8(value: f32) -> u8 {
+        (value.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
+    pub(super) fn poll(index: usize, _cache: &mut CapabilityCache) -> Result<DevicePacket, DeviceError> {
+        // Sample the pad inside a scope so the gilrs borrow ends before we
+        // mutate packet counters below.
+        let current: (u16, u8, u8, i16, i16, i16, i16) = {
+            let mut guard = shared()?;
+            let shared = guard.as_mut().ok_or(DeviceError::UnsupportedPlatform)?;
+            while shared.gilrs.next_event().is_some() {}
+            // gilrs IDs are opaque handles, not 0..n slots. Map our 4 TU3 device
+            // slots to the nth currently connected gamepad in enumeration order.
+            let id = shared.gilrs.gamepads().map(|(id, _)| id).nth(index).ok_or(DeviceError::Disconnected)?;
+            let pad = shared.gilrs.gamepad(id);
+            if !pad.is_connected() {
+                return Err(DeviceError::Disconnected);
+            }
+            // Use the high-level Gamepad API (Button/Axis mapping). The raw
+            // GamepadState API takes low-level Codes instead.
+            let mut buttons: u16 = 0;
+            if pad.is_pressed(gilrs::Button::DPadUp) { buttons |= DPAD_UP; }
+            if pad.is_pressed(gilrs::Button::DPadDown) { buttons |= DPAD_DOWN; }
+            if pad.is_pressed(gilrs::Button::DPadLeft) { buttons |= DPAD_LEFT; }
+            if pad.is_pressed(gilrs::Button::DPadRight) { buttons |= DPAD_RIGHT; }
+            if pad.is_pressed(gilrs::Button::Start) { buttons |= START; }
+            if pad.is_pressed(gilrs::Button::Select) { buttons |= BACK; }
+            if pad.is_pressed(gilrs::Button::LeftThumb) { buttons |= LEFT_THUMB; }
+            if pad.is_pressed(gilrs::Button::RightThumb) { buttons |= RIGHT_THUMB; }
+            if pad.is_pressed(gilrs::Button::LeftTrigger) { buttons |= LEFT_SHOULDER; }
+            if pad.is_pressed(gilrs::Button::RightTrigger) { buttons |= RIGHT_SHOULDER; }
+            if pad.is_pressed(gilrs::Button::South) { buttons |= BTN_A; }
+            if pad.is_pressed(gilrs::Button::East) { buttons |= BTN_B; }
+            if pad.is_pressed(gilrs::Button::West) { buttons |= BTN_X; }
+            if pad.is_pressed(gilrs::Button::North) { buttons |= BTN_Y; }
+            // Prefer analog trigger axes when the backend exposes them; fall back
+            // to digital shoulder buttons so 2-position pads still kickflip.
+            // gilrs exposes triggers as LeftZ/RightZ axes (0..1) and as
+            // LeftTrigger2/RightTrigger2 buttons; axes give finer granularity.
+            let lt_raw = pad.value(gilrs::Axis::LeftZ);
+            let rt_raw = pad.value(gilrs::Axis::RightZ);
+            let lt = if lt_raw > 0.0005 { trigger_u8(lt_raw) } else if buttons & LEFT_SHOULDER != 0 { 255 } else { 0 };
+            let rt = if rt_raw > 0.0005 { trigger_u8(rt_raw) } else if buttons & RIGHT_SHOULDER != 0 { 255 } else { 0 };
+            let lx = axis_i16(pad.value(gilrs::Axis::LeftStickX));
+            let ly = axis_i16(pad.value(gilrs::Axis::LeftStickY));
+            let rx = axis_i16(pad.value(gilrs::Axis::RightStickX));
+            let ry = axis_i16(pad.value(gilrs::Axis::RightStickY));
+            (buttons, lt, rt, lx, ly, rx, ry)
+        };
+        // Synthesize XInput packet numbers: bump only when raw bytes change.
+        let mut guard = shared()?;
+        let shared = guard.as_mut().ok_or(DeviceError::UnsupportedPlatform)?;
+        if current != shared.last[index] {
+            shared.last[index] = current;
+            shared.packet[index] = shared.packet[index].wrapping_add(1);
+        }
+        let (buttons, lt, rt, lx, ly, rx, ry) = current;
+        Ok(DevicePacket {
+            number: shared.packet[index],
+            state: XboxState { buttons, triggers: [lt, rt], left: [lx, ly], right: [rx, ry] },
+            // Standard gamepad; only subtype 7 zeroes TU3 byte 13.
+            subtype: 1,
+        })
+    }
 }
 
 #[cfg(test)]

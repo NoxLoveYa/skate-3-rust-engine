@@ -1,4 +1,5 @@
 mod fps_overlay;
+mod platform_bins;
 mod animation;
 mod crash_report;
 mod crash_context;
@@ -69,7 +70,7 @@ fn main() -> bevy::app::AppExit {
         }
     };
     profiling::map_metadata(&config);
-    eprintln!("REPORT_META startup=map_fingerprint:{:016x} difficulty:{} multiplayer_requested:{} custom_appearance:{} renderer:Vulkan", config.map_fingerprint, config.difficulty.key(), config.multiplayer.host.is_some() || config.multiplayer.direct.is_some(), config.multiplayer.appearance.is_some());
+    eprintln!("REPORT_META startup=map_fingerprint:{:016x} difficulty:{} multiplayer_requested:{} custom_appearance:{} renderer:{}", config.map_fingerprint, config.difficulty.key(), config.multiplayer.host.is_some() || config.multiplayer.direct.is_some(), config.multiplayer.appearance.is_some(), if cfg!(target_os = "macos") { "Metal" } else { "Vulkan" });
     eprintln!("REPORT_META stage=gameplay_configuration");
     if let Err(error) = skate_data::input_config::StockGameplayConfig::load(&config.asset_root) {
         eprintln!("{error}");

@@ -105,8 +105,8 @@ impl Steam {
             .parent()
             .unwrap()
             .to_path_buf();
-        let helper = dir.join("steam-relay/skate-steam-relay.exe");
-        if !helper.is_file() || !dir.join("steam-relay/steam_api64.dll").is_file() {
+        let helper = crate::platform_bins::relay_bin(&dir);
+        if !helper.is_file() || !crate::platform_bins::steam_api_dll(&dir).is_file() {
             return Err(
                 "Steam relay files missing; solo and direct multiplayer remain available".into(),
             );
