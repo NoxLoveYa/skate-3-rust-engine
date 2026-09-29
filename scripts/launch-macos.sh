@@ -11,11 +11,20 @@ if [[ ! -x "$EXE" ]]; then
   exit 1
 fi
 
+# Resolve converted assets: a conversion base holds installation.json
+# pointing at the current installation; a bare prepared-asset dir is used
+# as-is. (Passing the base itself fails with missing input.cfg.)
+ASSETS="$ROOT/assets"
+if [[ -f "$ASSETS/installation.json" ]]; then
+  INSTALL_DIR="$(python3 -c "import json; print(json.load(open('$ASSETS/installation.json'))['directory'])")"
+  ASSETS="$ASSETS/$INSTALL_DIR/assets"
+fi
+
 # Optional map argument: ./scripts/launch-macos.sh /path/to/University.skate
-ARGS=(--assets "$ROOT/assets")
+ARGS=(--assets "$ASSETS")
 if [[ $# -gt 0 ]]; then
   case "$1" in
-    *.skate) ARGS=(--assets "$ROOT/assets" --map "$1"); shift;;
+    *.skate) ARGS=(--assets "$ASSETS" --map "$1"); shift;;
     --*) ARGS=("$@"); set --;;
   esac
   if [[ $# -gt 0 && "$1" == *.skate ]]; then ARGS+=(--map "$1"); fi
