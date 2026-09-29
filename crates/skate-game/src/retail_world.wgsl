@@ -47,7 +47,19 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     if (flags & 4u) != 0u { overlay_sample = bindings::sample_macro_map(slot,scaled_uv(i.uv,p.surface.x)).rgb; }
     if (flags & 8u) != 0u && (fam == 3u || fam == 4u) { art = bindings::sample_decal_map(slot,i.color.xy); }
     if (flags & 16u) != 0u { masks = bindings::sample_specular_map(slot,i.uv).rgb; }
-    var wn = normalize(i.world_normal);
+    // Derivative basis, view vector and shading normal are dead on unlit,
+    // flat and passthrough families (verified per use below); every gate is
+    // draw-uniform in fam/flags, so no intra-draw divergence.
+    var wn = i.world_normal;
+    var kt = vec3<f32>(1.0, 0.0, 0.0);
+    var kb = vec3<f32>(0.0, 1.0, 0.0);
+    var vd = vec3<f32>(0.0, 0.0, 1.0);
+    // wn feeds shadow fetches (fam<=8/13), the normal perturb, spec/cube and
+    // water shading; flat fams 9-12/14/32 and ward water 31 never read it.
+    if fam <= 8u || fam == 13u || fam == 30u || fam == 33u { wn = normalize(i.world_normal); }
+    // kt/kb feed the normal perturb (fam<=6/13 with a normal map) and the
+    // ocean tangent frame (fam 30/33); nothing else reads them.
+    if fam == 30u || fam == 33u || ((fam <= 6u || fam == 13u) && (flags & 1u) != 0u) {
     let dp1 = dpdx(i.world_position.xyz);
     let dp2 = dpdy(i.world_position.xyz);
     // Exporter flips V and texture rows; recover original UV derivatives.
@@ -55,8 +67,8 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     let du2 = dpdy(i.uv * vec2<f32>(1.0,-1.0));
     let dp2p = cross(dp2,wn);
     let dp1p = cross(wn,dp1);
-    var kt = dp2p * du1.x + dp1p * du2.x;
-    var kb = dp2p * du1.y + dp1p * du2.y;
+    kt = dp2p * du1.x + dp1p * du2.x;
+    kb = dp2p * du1.y + dp1p * du2.y;
     kt *= -inverseSqrt(max(dot(kt,kt),1e-12));
     kb *= inverseSqrt(max(dot(kb,kb),1e-12));
 #ifdef VERTEX_TANGENTS
@@ -65,8 +77,13 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         kb = normalize(cross(wn,kt)) * i.world_tangent.w;
     }
 #endif
+    }
     let rpos = i.world_position.xyz - frame::view.world_position;
-    let vd = -normalize(rpos);
+    // vd feeds spec/cube reflection (default branch) and water shading;
+    // flat fams never read it.
+    if ((fam <= 8u || fam == 13u) && (((flags & 16u) != 0u) || ((fam == 5u || fam == 6u || fam == 13u) && (flags & 64u) != 0u))) || fam == 30u || fam == 31u || fam == 33u {
+        vd = -normalize(rpos);
+    }
     // Authored render-location direction for the tangent-space sign terms.
     // This does not add directional light energy or a shadow source.
     let sun = p.sun_direction.xyz;

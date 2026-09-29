@@ -316,7 +316,9 @@ fn setup(
         });
     }
     let output = commands
-        .spawn((Camera2d, Msaa::Off, IsDefaultUiCamera))
+        // The fullscreen scene quad covers every pixel; clearing first is a
+        // wasted full-frame tile clear on TBDR.
+        .spawn((Camera2d, Msaa::Off, IsDefaultUiCamera, Camera { clear_color: ClearColorConfig::None, ..default() }))
         .id();
     commands.spawn((
         Node {
