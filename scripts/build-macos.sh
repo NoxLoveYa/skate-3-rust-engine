@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # macOS (Apple Silicon) development build for Skate 3 Rust Engine.
 # Usage: ./scripts/build-macos.sh [--release]
+#
+# The staged binary is built WITHOUT Bevy dynamic linking so bin/skate3rust
+# runs standalone (the default dynamic build only runs via cargo because its
+# Bevy dylib lives under target/debug/deps). First build takes a while
+# (static Bevy); later builds are incremental.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -9,27 +14,26 @@ MODE="debug"
 if [[ "${1:-}" == "--release" ]]; then MODE="release"; fi
 
 if ! command -v rustc >/dev/null 2>&1; then
-  echo "Rust is missing. Install via:" >&2
-  echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
-  echo "then: rustup target add aarch64-apple-darwin" >&2
+  echo "Rust is missing. Run ./scripts/download-macos-deps.sh first." >&2
   exit 1
 fi
 if ! xcode-select -p >/dev/null 2>&1; then
   echo "Xcode Command Line Tools missing. Run: xcode-select --install" >&2
   exit 1
 fi
+export PATH="$HOME/.cargo/bin:$PATH"
 
-# Refresh Cargo.lock for the new non-Windows gilrs edge (first run only).
+# Refresh Cargo.lock for the non-Windows gilrs edge (first run only).
 if ! cargo metadata --format-version 1 --locked >/dev/null 2>&1; then
   echo "Refreshing Cargo.lock for macOS dependencies..."
   cargo metadata --format-version 1 >/dev/null
 fi
 
 if [[ "$MODE" == "release" ]]; then
-  cargo build --release -p skate-game --bin skate3rust
+  cargo build --release -p skate-game --bin skate3rust --no-default-features
   EXE="target/release/skate3rust"
 else
-  cargo build -p skate-game --bin skate3rust
+  cargo build -p skate-game --bin skate3rust --no-default-features
   EXE="target/debug/skate3rust"
 fi
 

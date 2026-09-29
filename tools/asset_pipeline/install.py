@@ -20,10 +20,15 @@ def map_workers():
             count=min(count,max(1,(memory.available-2*1024**3)//(3*1024**3)))
     return count
 XISO_URLS = {
-    # XboxDev publishes per-OS extract-xiso builds. macOS players should prefer
-    # an already-extracted folder (select default.xex) to skip this download.
+    # Pinned XboxDev release; per-OS archives from the same build.
+    # macOS/Linux players with an already-extracted folder (default.xex)
+    # skip this download entirely.
     'win32': ('https://github.com/XboxDev/extract-xiso/releases/download/build-202505152050/extract-xiso-Win64_Release.zip',
               'fec88d03c7efd6205ab09be4abba70c0afd0eb27a5709f0a6235b828ba5ac11e'),
+    'darwin': ('https://github.com/XboxDev/extract-xiso/releases/download/build-202505152050/extract-xiso_macOS.zip',
+               '371e4a800086e875257ddafc037970789fb942b69dbf8ab0ba8301ff7799fef0'),
+    'linux': ('https://github.com/XboxDev/extract-xiso/releases/download/build-202505152050/extract-xiso_Linux.zip',
+              '982bbfefc9255d51f5348a477d7135d68abf81c0af9600e5728edb1246cfa200'),
 }
 XISO_URL, XISO_SHA = XISO_URLS.get(sys.platform, XISO_URLS['win32'])
 # Toolchain note: on macOS/Linux the extractor binary inside the ZIP is
