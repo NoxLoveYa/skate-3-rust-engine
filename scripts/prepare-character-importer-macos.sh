@@ -34,5 +34,7 @@ if [[ "$ACTUAL" != "$SHA" ]]; then
 fi
 cp -f "$ARCHIVE" "$DEST/FBX2glTF"
 chmod +x "$DEST/FBX2glTF"
-"$DEST/FBX2glTF" --version 2>&1 | head -n 2 || true
+# Read the full output (no head -q early-close) so a broken binary fails loudly.
+VERSION_LINE="$("$DEST/FBX2glTF" --version 2>&1)" || { echo "FBX2glTF smoke check failed." >&2; exit 1; }
+echo "$VERSION_LINE" | head -n 2
 echo "Importer ready: $DEST/FBX2glTF"

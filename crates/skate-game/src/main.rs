@@ -1,5 +1,4 @@
 mod fps_overlay;
-mod platform_bins;
 mod animation;
 mod crash_report;
 mod crash_context;
@@ -28,6 +27,7 @@ mod graph_runtime;
 mod input;
 mod session_marker;
 mod physics;
+mod platform_bins;
 mod skater_animation;
 mod verification;
 mod performance;

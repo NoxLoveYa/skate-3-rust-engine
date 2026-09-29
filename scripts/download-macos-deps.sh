@@ -33,8 +33,10 @@ echo "==> 3/6 Python 3.13 (asset conversion)"
 if ! have brew; then
   echo "Installing Homebrew (required for Python 3.13)..."
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  eval "$(/opt/homebrew/bin/brew shellenv)"
 fi
+for brew_bin in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+  if [[ -x "$brew_bin" ]]; then eval "$("$brew_bin" shellenv)"; break; fi
+done
 if ! have python3.13; then
   echo "Installing python@3.13..."
   brew install python@3.13

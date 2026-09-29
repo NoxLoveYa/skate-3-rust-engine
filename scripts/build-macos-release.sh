@@ -37,7 +37,12 @@ rustc --edition 2024 --crate-type cdylib -C opt-level=3 \
 cp -f target/native/librefpack.dylib "$STAGE/support/librefpack.dylib"
 
 echo "==> character importer runtime"
-./scripts/prepare-character-importer-macos.sh --dest "$STAGE/support"
+# Tolerate Rosetta-less environments (e.g. minimal CI images without a
+# passwordless sudo): the package still ships, minus bundled FBX import.
+# Conversions can always pass --fbx-tool explicitly (see docs/macos.md).
+if ! ./scripts/prepare-character-importer-macos.sh --dest "$STAGE/support"; then
+  echo "WARNING: importer runtime skipped; character FBX import requires --fbx-tool." >&2
+fi
 
 echo "==> mods, docs, licenses"
 cp -f mods/native-trainer.zip mods/mario-kart.zip mods/README.md "$STAGE/mods/" 2>/dev/null || true
@@ -60,7 +65,8 @@ CHARACTER_CUSTOMISER="$(python3 -m tools.asset_pipeline.customiser_setup --finge
 python3 - "$STAGE" "$REVISION" "$BUILD" "$TAG" "$EXE_SHA" "$ASSET_PIPELINES" "$CHARACTER_CUSTOMISER" <<'EOF'
 import hashlib, json, sys
 from pathlib import Path
-stage, revision, build, tag, exe_sha, pipelines, customiser = sys.argv[1:8]
+stage = Path(sys.argv[1])
+revision, build, tag, exe_sha, pipelines, customiser = sys.argv[2:8]
 files = {}
 for path in sorted(stage.rglob('*')):
     if not path.is_file():
@@ -87,7 +93,8 @@ cp -f "$STAGE/release.json" target/release.json
 echo "==> archive"
 ZIP="$ROOT/target/skate3rust-macos-arm64.zip"
 rm -f "$ZIP" "$ZIP.sha256"
-ditto -c -k --sequesterRsrc --keepParent "$STAGE" "$ZIP"
+# --norsrc keeps AppleDouble (._) resource-fork files out of the archive.
+ditto -c -k --keepParent --norsrc "$STAGE" "$ZIP"
 shasum -a 256 "$ZIP" | awk '{print $1 "  skate3rust-macos-arm64.zip"}' > "$ZIP.sha256"
 echo "Release package: $ZIP"
 cat "$ZIP.sha256"

@@ -16,6 +16,7 @@ pub(crate) enum DeviceError {
     Disconnected,
     State(u32),
     Capabilities(u32),
+    #[cfg(not(windows))]
     UnsupportedPlatform,
 }
 
