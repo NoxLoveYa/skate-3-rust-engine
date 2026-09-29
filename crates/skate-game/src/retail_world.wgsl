@@ -88,7 +88,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         // The reference folds the reflective material's constant detail texel.
         if (flags & 128u) != 0u { detail = bindings::load_detail(slot,vec2<i32>(0),0).rg; }
     }
-<    if (flags & 4u) != 0u { overlay_sample = bindings::sample_macro_map(slot,bindings::scaled_uv(i.uv,p.surface.x),g_macro).rgb; }
+    if (flags & 4u) != 0u { overlay_sample = bindings::sample_macro_map(slot,bindings::scaled_uv(i.uv,p.surface.x),g_macro).rgb; }
     if (flags & 8u) != 0u && (fam == 3u || fam == 4u) { art = bindings::sample_decal_map(slot,i.color.xy,g_decal); }
     if (flags & 16u) != 0u { masks = bindings::sample_specular_map(slot,i.uv,g).rgb; }
     // Derivative basis, view vector and shading normal are dead on unlit,
@@ -122,7 +122,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         kt = normalize(i.world_tangent.xyz);
         kb = normalize(cross(wn,kt)) * i.world_tangent.w;
     }
-<    }
+    }
     let rpos = i.world_position.xyz - frame::view.world_position;
     // vd feeds spec/cube reflection (default branch) and water shading;
     // flat fams never read it.
