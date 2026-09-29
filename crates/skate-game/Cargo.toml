@@ -42,7 +42,7 @@ gltf = { version = "=1.4.1", default-features = true }
 gilrs = "=0.11.2"
 
 [dev-dependencies]
-naga = { version = "=27.0.3", features = ["wgsl-in"] }
+naga = { version = "=27.0.3", features = ["wgsl-in", "msl-out"] }
 naga_oil = { version = "=0.20.0", default-features = false }
 # Headless shader probes pin Vulkan on Windows/Linux, Metal on macOS.
 # Enable both backends so `cargo test` compiles the probe on either OS.

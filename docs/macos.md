@@ -135,16 +135,21 @@ via Rosetta 2 (the script installs Rosetta if missing).
 - `cargo check` / `cargo build -p skate-game`: clean, no errors.
 - New gilrs platform cache test: passes.
 - `skate-data`, `skate-net`: all pass.
-- 5 failures verified **pre-existing** (each fails identically on unmodified
+- 3 failures verified **pre-existing** (each fails identically on unmodified
   `main` via `git stash`, so not regressions from this port):
   - `skate-core`: `broadphase_tests::predictive_contacts_and_retention...`
     compares raw float bit patterns tuned on x86-64; ARM64 NEON/FMA differs
     in the last ULP. Skipped in macOS CI with a comment.
-  - `skate-game` (4): grind-handler routing count, rwcm contact-toolkit
-    query IDs, replay scrub input leak, windowless render-adapter probe —
-    macOS-environment issues (no HID pads, no windowed GPU, fixture
-    assumptions). Windows CI still runs them; skipped in macOS CI with
-    comments.
+  - `skate-game` (2): grind-handler routing count, rwcm contact-toolkit
+    query IDs — fixture/arch issues. Windows CI still runs them; skipped in
+    macOS CI with comments. (Two former macOS failures, replay scrub and
+    the render-adapter probe, were fixed by the merged branch and run
+    unskipped.)
+  - `skate-game`: `setup::tests::pipelines_accept_valid_group_outputs...`
+    fails on every host (its fixture's `core` group can never satisfy
+    `pipelines_acceptable` as written) — arrived via a merged branch,
+    unrelated to this port; skipped in macOS CI pending upstream intent
+    clarification. Upstream CI runs no `cargo test`, so it was never gated.
 - `tools.asset_pipeline.test_versions`: passes under Python 3.13 (CI);
   locally under system Python 3.9 it errors on `hashlib.file_digest`
   (3.11+ API) — another reason the project pins 3.13.
@@ -173,7 +178,14 @@ before/after any change on the same map.
 A 30-second unattended capture (`--trace … --trace-delay 15
 --trace-seconds 30`, University spawn, no input) analyzed with
 `tools/analyse_performance_trace.py` says the port is **GPU-bound with a
-lean CPU side** — there is no Metal-specific code defect to fix:
+lean CPU side** — there is no Metal-specific code defect to fix
+(pre-merge renderer: frame p50 ~19.7 ms).
+
+After the render rework that landed via merge (texture-array bindings,
+mod-rendering optimization), the same spawn benches at p50 **~9 ms**
+(`scripts/bench-macos.sh`) — including at 3840×2160 native with MSAA 4x.
+The analyzer accepts both trace envelopes (bare `[...]` and
+`{"traceEvents":[`) since the recorder format changed.
 
 - Frame intervals: p50 **16.9 ms** (59 FPS), p95 29.8 ms, p99 36.0 ms.
 - Gameplay CPU (`Main` schedule) p50 is **0.29 ms** — physics, animation

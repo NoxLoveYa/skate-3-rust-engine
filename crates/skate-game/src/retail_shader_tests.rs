@@ -154,6 +154,47 @@ fn depth_shader_validates_in_every_shadow_configuration() {
     }
 }
 
+/// Metal translation regression test: WGSL that validates can still fail
+/// Naga's MSL backend (cube-array explicit gradients have no `gradient2d`
+/// translation, which broke macOS pipeline creation while Windows Vulkan
+/// stayed green). Every shipped fragment shader must survive translation on
+/// the backend Macs actually run; this runs on all CI hosts (pure CPU).
+#[test]
+fn shipped_shaders_translate_to_metal() {
+    for (name, source, extras) in [
+        ("world", include_str!("retail_world.wgsl"), &[][..]),
+        ("character", include_str!("retail_character.wgsl"), &[][..]),
+        ("sky", include_str!("retail_sky.wgsl"), &[][..]),
+        ("depth", include_str!("retail_depth.wgsl"), &[][..]),
+        (
+            "depth-cutoff",
+            include_str!("retail_depth.wgsl"),
+            &["WORLD_ALPHA_CUTOFF"][..],
+        ),
+        // retail_tone.wgsl omitted: it needs the fullscreen-vertex import
+        // fixture and contains no gradient/binding constructs at risk.
+    ] {
+        let module = validate(source, extras);
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{name}: revalidate failed: {e:?}"));
+        // Match what wgpu requests from modern Metal devices; the default
+        // 1.0 rejects even builtin instance indexing.
+        let options = naga::back::msl::Options { lang_version: (2, 4), ..Default::default() };
+        if let Err(error) = naga::back::msl::write_string(
+            &module,
+            &info,
+            &options,
+            &naga::back::msl::PipelineOptions::default(),
+        ) {
+            panic!("{name}: Metal translation failed: {error:?}");
+        }
+    }
+}
+
 /// Each vertex input location of a shader's `vertex` entry point, against a
 /// description of the type it expects to receive there.
 fn vertex_locations(module: &naga::Module) -> HashMap<u32, String> {
