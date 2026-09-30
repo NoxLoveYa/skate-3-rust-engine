@@ -21,6 +21,9 @@ const AMBIENT_GAIN: f32 = 0.35;
 const GRIND_BANK: &str = "GRINDS";
 const LAND_BANK: &str = "board_scrapes";
 const BAIL_BANK: &str = "Bodyslide";
+const CHEER_BANK: &str = "arena_cheers";
+const OHH_BANK: &str = "arena_ohhs";
+const CROWD_GAIN: f32 = 0.4;
 /// Second rolling layer. The retail rolling sound is a composite (base wheel
 /// loop plus rattles/seams); the banks below come from the engine's own
 /// AEMS registry (SK8_AEMS_rolling.csi family).
@@ -68,6 +71,8 @@ struct Sfx {
     ambient_bed: String,
     grind_index: usize,
     land_index: usize,
+    cheer_index: usize,
+    ohh_index: usize,
     was_grinding: bool,
     was_bailing: bool,
     landing_seq: u32,
@@ -233,7 +238,10 @@ mod tests {
     }
     #[test]
     fn bank_roles_are_named() {
-        assert_eq!((GRIND_BANK, LAND_BANK, BAIL_BANK), ("GRINDS", "board_scrapes", "Bodyslide"));
+        assert_eq!(
+            (GRIND_BANK, LAND_BANK, BAIL_BANK, CHEER_BANK, OHH_BANK),
+            ("GRINDS", "board_scrapes", "Bodyslide", "arena_cheers", "arena_ohhs")
+        );
     }
     #[test]
     fn rolling_is_silent_unless_riding() {
@@ -341,12 +349,19 @@ fn direct(world: &mut World) {
         if let Some(entity) = sfx.grinding {
             set_gain(world, entity, grind_gain_for(speed));
         }
-        // Bail slide loop while wiping out.
+        // Bail slide loop while wiping out, plus a crowd groan.
         if bailing && !sfx.was_bailing {
             if let Some(clip) = sfx.banks.get(BAIL_BANK).and_then(|bank| bank.first().cloned()) {
                 info!("Sfx: bail slide");
                 let entity = loop_voice(world, &clip, BAIL_GAIN);
                 sfx.bail_sliding = Some(entity);
+            }
+            if let Some(clip) = sfx.banks.get(OHH_BANK).and_then(|bank| {
+                (!bank.is_empty()).then(|| bank[(sfx.ohh_index + 1) % bank.len()].clone())
+            }) {
+                sfx.ohh_index += 1;
+                let entity = one_shot(world, &clip, CROWD_GAIN, 1.0);
+                sfx.voices.push((entity, 0.0));
             }
         } else if !bailing {
             stop_voice(world, &mut sfx.bail_sliding);
@@ -362,6 +377,16 @@ fn direct(world: &mut World) {
                 info!("Sfx: landing impact={impact:.2}");
                 let entity = one_shot(world, &clip, impact * LAND_GAIN, 0.9 + 0.2 * impact);
                 sfx.voices.push((entity, 0.0));
+                // Big air gets a crowd reaction.
+                if impact > 0.8 {
+                    if let Some(cheer) = sfx.banks.get(CHEER_BANK).and_then(|bank| {
+                        (!bank.is_empty()).then(|| bank[(sfx.cheer_index + 1) % bank.len()].clone())
+                    }) {
+                        sfx.cheer_index += 1;
+                        let entity = one_shot(world, &cheer, CROWD_GAIN, 1.0);
+                        sfx.voices.push((entity, 0.0));
+                    }
+                }
             }
         }
         sfx.was_grinding = grinding;
