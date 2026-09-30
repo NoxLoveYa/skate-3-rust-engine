@@ -96,6 +96,29 @@ def ram_candidates(data, snr_off, end):
         yield head_size, data[snr_off + head_size:end]
 
 
+def parse_splc(data):
+    """Index an SPLC random-pool bank; sounds slice [start:next start]."""
+    if data[:4] != b"SPLC":
+        raise ValueError("Not an SPLC bank")
+    _ver, diroff, _c1, _c2, _rsv, ns = struct.unpack(">6I", data[4:28])
+    base = diroff + 60 + ns * 12
+    sounds = []
+    for i in range(ns):
+        rec = data[diroff + 60 + i * 12:]
+        start, _audio_end, checksum = struct.unpack(">3I", rec[:12])
+        nxt = data[diroff + 60 + (i + 1) * 12:diroff + 60 + (i + 1) * 12 + 4]
+        end = struct.unpack(">I", nxt)[0] if i + 1 < ns else len(data) - base
+        sounds.append({"index": i, "start": base + start, "end": base + end,
+                       "checksum": checksum})
+    return sounds
+
+
+def parse_grain(data):
+    """Split a granular bed into its SNR offset and pattern table."""
+    hs = struct.unpack(">I", data[:4])[0]
+    return {"snr_off": hs, "pattern": data[0x24:hs]}
+
+
 def ram_end(data, snr_off, fallback):
     """Payload end from the RAM header extension, else the fallback bound."""
     import struct
@@ -166,7 +189,8 @@ def convert_sfx(game_root, out_dir, work, report, log, ffmpeg, workers=None):
     work.mkdir(parents=True, exist_ok=True)
     workers = workers or min(8, max(1, (os.cpu_count() or 2) // 2))
     ffprobe = probe_for(ffmpeg)
-    manifest = {"version": 1, "banks": {}, "ambience": {}, "post": {}, "wheels": []}
+    manifest = {"version": 1, "banks": {}, "ambience": {}, "post": {}, "wheels": [],
+                "pools": {}, "grains": {}}
 
     def track_entry(group, target, info, duration_s):
         return {"file": f"{group}/{target.name}", "samples": info["samples"],
@@ -338,6 +362,56 @@ def convert_sfx(game_root, out_dir, work, report, log, ffmpeg, workers=None):
             return (stem, None)
         return (stem, track_entry("wheels", target, info, info["output_s"]))
 
+    def splc_job(args):
+        stem, data = args
+        pool_dir = out_dir / "pools" / stem
+        pool_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            sounds = parse_splc(data)
+        except (ValueError, struct.error) as error:
+            log.write(f"pools/{stem}: skipped ({error})\n")
+            return (stem, [])
+        files = []
+        for sound in sounds:
+            target = pool_dir / f"{sound['index']:04d}.ogg"
+            try:
+                blob = data[sound["start"]:sound["end"]]
+                info = parse_snr(blob[:8])
+                if info["version"] != 0 or info["codec"] != 3:
+                    raise ValueError(f"unsupported stream: {info}")
+                payload = deblock_eaxma(blob[8:])
+                if not payload:
+                    raise ValueError("empty payload after deblocking")
+                duration = stereo_job(info, payload, target, exact=not info["loop"])
+            except (ValueError, RuntimeError) as error:
+                target.unlink(missing_ok=True)
+                log.write(f"pools/{stem} sound {sound['index']}: skipped ({error})\n")
+                continue
+            files.append({"file": f"pools/{stem}/{target.name}", "index": sound["index"],
+                          "samples": info["samples"], "rate": info["rate"],
+                          "channels": info["channels"], "loop": bool(info["loop"]),
+                          "duration_s": round(duration, 3)})
+        return (stem, files)
+
+    def grain_job(args):
+        stem, data = args
+        target = out_dir / "grains" / f"{stem}.ogg"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            grain = parse_grain(data)
+            info = parse_snr(data[grain["snr_off"]:grain["snr_off"] + 8])
+            if info["version"] != 0 or info["codec"] != 3:
+                raise ValueError(f"unsupported stream: {info}")
+            payload = deblock_eaxma(data[grain["snr_off"] + 8:])
+            if not payload:
+                raise ValueError("empty payload after deblocking")
+            duration = stereo_job(info, payload, target, exact=not info["loop"])
+        except (ValueError, RuntimeError) as error:
+            target.unlink(missing_ok=True)
+            log.write(f"grains/{stem}: skipped ({error})\n")
+            return (stem, None)
+        return (stem, track_entry("grains", target, info, duration))
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for stem, files in pool.map(bank_job, bank_jobs):
             if files:
@@ -348,7 +422,36 @@ def convert_sfx(game_root, out_dir, work, report, log, ffmpeg, workers=None):
         for stem, item in pool.map(wheel_job, wheel_jobs):
             if item:
                 manifest["wheels"].append(item)
-    report(f"sfx: banks={len(manifest['banks'])} ambience={len(manifest['ambience'])} "
-           f"post={len(manifest['post'])} wheels={len(manifest['wheels'])}")
+        splc_jobs = []
+        for e in abk_arch.entries:
+            if e.path.endswith(".bnk"):
+                splc_jobs.append((Path(e.path).stem, abk_arch.read(e)))
+        report(f"Converting {len(splc_jobs)} random pools")
+        for stem, files in pool.map(splc_job, splc_jobs):
+            if files:
+                manifest["pools"][stem] = files
+        grain_arch = BigArchive(game_root / "data/audio/grains.big")
+        grain_jobs = [(Path(e.path).stem, grain_arch.read(e)) for e in grain_arch.entries]
+        for stem, item in pool.map(grain_job, grain_jobs):
+            if item:
+                manifest["grains"][stem] = item
+        # SPLC random pools (collisions, menu, foley): indexed blobs.
+        splc_arch = BigArchive(game_root / "data/audio/audiofiles.big")
+        pool_jobs = []
+        for e in splc_arch.entries:
+            if e.path.endswith(".bnk"):
+                pool_jobs.append((Path(e.path).stem, splc_arch.read(e)))
+        for stem, files in pool.map(splc_job, pool_jobs):
+            if files:
+                manifest["pools"][stem] = files
+        # Granular beds: single SNR each with a pitch pattern table.
+        grain_arch = BigArchive(game_root / "data/audio/grains.big")
+        grain_jobs = [(Path(e.path).stem, grain_arch.read(e)) for e in grain_arch.entries]
+        for stem, item in pool.map(grain_job, grain_jobs):
+            if item:
+                manifest["grains"][stem] = item
+    report(f"sfx: banks={len(manifest['banks'])} pools={len(manifest['pools'])} "
+           f"ambience={len(manifest['ambience'])} post={len(manifest['post'])} "
+           f"wheels={len(manifest['wheels'])} grains={len(manifest['grains'])}")
     (out_dir / "sfx.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest

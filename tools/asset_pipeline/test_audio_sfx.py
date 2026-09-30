@@ -67,6 +67,29 @@ class SfxParserTests(unittest.TestCase):
         heads = [payload for _, payload in sfx.ram_candidates(b"\x00" * 64, 8, 64)]
         self.assertEqual([len(h) for h in heads], [64 - 28, 64 - 20, 64 - 24, 64 - 32, 64 - 16])
 
+    def test_splc_index_slices_sounds(self):
+        import struct
+        sounds = [{"index": 0}, {"index": 1}]
+        data = bytearray(0x200)
+        data[:4] = b"SPLC"
+        struct.pack_into(">6I", data, 4, 3, 0x80, 0, 0, 0, 2)
+        for i, off in enumerate((0x100, 0x140)):
+            struct.pack_into(">3I", data, 0x80 + 60 + i * 12, off, off + 0x40, i)
+        blob = bytes(data)
+        parsed = sfx.parse_splc(blob)
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0]["start"], 0x80 + 60 + 24 + 0x100)
+        self.assertEqual(parsed[0]["end"], 0x80 + 60 + 24 + 0x140)
+        self.assertEqual(parsed[1]["end"], len(blob))
+
+    def test_grain_splits_pattern_table(self):
+        import struct
+        data = bytearray(0x100)
+        struct.pack_into(">I", data, 0, 0x40)
+        grain = sfx.parse_grain(bytes(data))
+        self.assertEqual(grain["snr_off"], 0x40)
+        self.assertEqual(len(grain["pattern"]), 0x40 - 0x24)
+
 
 if __name__ == "__main__":
     unittest.main()
