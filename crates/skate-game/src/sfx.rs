@@ -21,6 +21,10 @@ const AMBIENT_GAIN: f32 = 0.35;
 const GRIND_BANK: &str = "GRINDS";
 const LAND_BANK: &str = "board_scrapes";
 const BAIL_BANK: &str = "Bodyslide";
+/// Second rolling layer. The retail rolling sound is a composite (base wheel
+/// loop plus rattles/seams); the banks below come from the engine's own
+/// AEMS registry (SK8_AEMS_rolling.csi family).
+const RATTLE_BANK: &str = "Rolling_Rattles";
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct Clip {
@@ -57,6 +61,7 @@ struct Sfx {
     beds: Vec<(String, Handle<AudioSource>)>,
     wheels: Vec<Handle<AudioSource>>,
     rolling: Option<Entity>,
+    rattle: Option<Entity>,
     grinding: Option<Entity>,
     bail_sliding: Option<Entity>,
     ambient: Option<Entity>,
@@ -301,6 +306,23 @@ fn direct(world: &mut World) {
             }
             if let Some(entity) = sfx.rolling {
                 set_gain(world, entity, roll_gain);
+            }
+        }
+        // Rattle layer fades in with speed over the base wheel loop.
+        if let Some(clip) = sfx.banks.get(RATTLE_BANK).and_then(|bank| bank.first().cloned()) {
+            if sfx.rattle.is_none() {
+                let entity = loop_voice(world, &clip, 0.0);
+                sfx.rattle = Some(entity);
+            }
+            if let Some(entity) = sfx.rattle {
+                let rattle_gain = if menu_open {
+                    0.0
+                } else if !riding {
+                    0.0
+                } else {
+                    ((speed - 4.0) / 8.0).clamp(0.0, 1.0) * ROLL_GAIN
+                };
+                set_gain(world, entity, rattle_gain);
             }
         }
         // Grind loop while a grind is active.
