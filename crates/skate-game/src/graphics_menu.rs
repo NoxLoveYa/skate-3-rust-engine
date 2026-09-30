@@ -218,6 +218,9 @@ impl Menu {
     pub(crate) fn music_station(&self) -> u8 {
         self.settings.music
     }
+    pub(crate) fn selected_row(&self) -> usize {
+        self.selected
+    }
     pub(crate) fn transition_finished(&mut self, status: String, resume: bool) {
         self.status = status;
         self.open = !resume;

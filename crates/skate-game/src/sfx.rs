@@ -23,6 +23,9 @@ const LAND_BANK: &str = "board_scrapes";
 const BAIL_BANK: &str = "Bodyslide";
 const CHEER_BANK: &str = "arena_cheers";
 const OHH_BANK: &str = "arena_ohhs";
+const UI_POOL: &str = "sk8_menu";
+const COLLISION_POOL: &str = "Skate_Collisions";
+const UI_GAIN: f32 = 0.35;
 const SKID_BANK: &str = "WHEEL_SKID_BANK";
 const SEAM_BANK: &str = "Seams_Bank";
 const SQUEAK_BANK: &str = "Brd_Squeaks";
@@ -66,6 +69,8 @@ struct Manifest {
     #[serde(default)]
     banks: HashMap<String, Vec<Clip>>,
     #[serde(default)]
+    pools: HashMap<String, Vec<Clip>>,
+    #[serde(default)]
     ambience: HashMap<String, Clip>,
     #[serde(default)]
     wheels: Vec<Clip>,
@@ -74,15 +79,10 @@ struct Manifest {
 #[derive(Resource, Default)]
 struct Sfx {
     banks: HashMap<String, Vec<Handle<AudioSource>>>,
+    pools: HashMap<String, Vec<Handle<AudioSource>>>,
     beds: Vec<(String, Handle<AudioSource>)>,
     wheels: Vec<Handle<AudioSource>>,
     rolling: Option<Entity>,
-    rattle: Option<Entity>,
-    skidding: Option<Entity>,
-    winding: Option<Entity>,
-    braking: Option<Entity>,
-    grinding: Option<Entity>,
-    bail_sliding: Option<Entity>,
     ambient: Option<Entity>,
     ambient_bed: String,
     grind_index: usize,
@@ -92,11 +92,24 @@ struct Sfx {
     flip_index: usize,
     seam_index: usize,
     push_index: usize,
+    rattle_index: usize,
+    wind_index: usize,
+    skid_index: usize,
+    brake_index: usize,
+    bail_index: usize,
+    ui_index: usize,
+    grind_t: f32,
+    skid_t: f32,
+    bail_t: f32,
+    brake_t: f32,
+    wind_t: f32,
+    rattle_t: f32,
     distance: f32,
     was_grounded: bool,
     was_pushing: bool,
-    was_grinding: bool,
     was_bailing: bool,
+    menu_row: usize,
+    menu_was_open: bool,
     landing_seq: u32,
     fall_speed: f32,
     voices: Vec<(Entity, f32)>,
@@ -161,6 +174,15 @@ fn load(
     for (bank, clips) in &manifest.banks {
         sfx.banks.insert(
             bank.clone(),
+            clips
+                .iter()
+                .map(|clip| asset_server.load::<AudioSource>(asset_audio(&clip.file)))
+                .collect(),
+        );
+    }
+    for (pool, clips) in &manifest.pools {
+        sfx.pools.insert(
+            pool.clone(),
             clips
                 .iter()
                 .map(|clip| asset_server.load::<AudioSource>(asset_audio(&clip.file)))
@@ -321,6 +343,21 @@ fn skid_gain_for(cos: f32) -> f32 {
     ((0.906 - cos) / 0.5).clamp(0.0, 1.0) * SKID_GAIN
 }
 
+/// Short-bank repeat cadences in seconds. Retail ships these voices as
+/// one-shot pools, so sustained states retrigger round-robin clips instead
+/// of looping a single short file (which stutters audibly).
+const GRIND_REPEAT: f32 = 1.0;
+const SKID_REPEAT: f32 = 0.18;
+const BRAKE_REPEAT: f32 = 0.12;
+const BAIL_REPEAT: f32 = 0.4;
+const WIND_REPEAT: f32 = 0.35;
+const RATTLE_REPEAT: f32 = 0.9;
+
+/// Deterministic per-trigger pitch wobble so repeats don't sound mechanical.
+fn jitter(counter: usize) -> f32 {
+    0.95 + 0.01 * ((counter * 37 + 11) % 10) as f32
+}
+
 fn direct(world: &mut World) {
     let speed;
     let slip: f32;
@@ -361,6 +398,27 @@ fn direct(world: &mut World) {
     }
     world.resource_scope(|world, mut sfx: Mut<Sfx>| {
         let dt = world.resource::<Time<Real>>().delta_secs().clamp(0.0, 0.25);
+        // Menu selection ticks from the UI pool.
+        let (row, open_now) = match world.get_resource::<crate::graphics_menu::Menu>() {
+            Some(menu) => (menu.selected_row(), menu.open),
+            None => (0, false),
+        };
+        if open_now {
+            if row != sfx.menu_row || !sfx.menu_was_open {
+                if let Some(clip) = sfx.pools.get(UI_POOL).and_then(|pool| {
+                    (!pool.is_empty()).then(|| pool[(sfx.ui_index + 1) % pool.len()].clone())
+                }) {
+                    sfx.ui_index += 1;
+                    info!("Sfx: ui click");
+                    let entity = one_shot(world, &clip, UI_GAIN, 1.0);
+                    sfx.voices.push((entity, 0.0));
+                }
+            }
+            sfx.menu_row = row;
+            sfx.menu_was_open = true;
+        } else {
+            sfx.menu_was_open = false;
+        }
         let roll_gain = if menu_open { 0.0 } else { roll_gain_for(speed, riding) };
         if let Some(wheel) = sfx.wheels.last() {
             if sfx.rolling.is_none() {
@@ -371,54 +429,48 @@ fn direct(world: &mut World) {
                 set_gain(world, entity, roll_gain);
             }
         }
-        // Rattle layer fades in with speed over the base wheel loop.
-        if let Some(clip) = sfx.banks.get(RATTLE_BANK).and_then(|bank| bank.first().cloned()) {
-            if sfx.rattle.is_none() {
-                let entity = loop_voice(world, &clip, 0.0);
-                sfx.rattle = Some(entity);
-            }
-            if let Some(entity) = sfx.rattle {
-                let rattle_gain = if menu_open {
-                    0.0
-                } else if !riding {
-                    0.0
-                } else {
-                    ((speed - 4.0) / 8.0).clamp(0.0, 1.0) * ROLL_GAIN
-                };
-                set_gain(world, entity, rattle_gain);
-            }
-        }
-        // Powerslide skid loop while the board slides sideways.
-        let skidding = riding && speed > 3.0 && slip < 0.906;
-        if skidding {
-            if let Some(clip) = sfx.banks.get(SKID_BANK).and_then(|bank| bank.first().cloned()) {
-                if sfx.skidding.is_none() {
-                    info!("Sfx: powerslide skid");
-                    let entity = loop_voice(world, &clip, 0.0);
-                    sfx.skidding = Some(entity);
+        // Rattle layer retriggers over the base wheel loop at speed.
+        if riding && !menu_open && speed > 4.0 {
+            sfx.rattle_t -= dt;
+            if sfx.rattle_t <= 0.0 {
+                sfx.rattle_t = RATTLE_REPEAT;
+                if let Some(clip) = sfx.banks.get(RATTLE_BANK).and_then(|bank| (!bank.is_empty()).then(|| bank[(sfx.rattle_index + 1) % bank.len()].clone())) {
+                    let gain = ((speed - 4.0) / 8.0).clamp(0.0, 1.0) * ROLL_GAIN;
+                    let entity = one_shot(world, &clip, gain, jitter(sfx.rattle_index));
+                    sfx.voices.push((entity, 0.0));
                 }
             }
         } else {
-            stop_voice(world, &mut sfx.skidding);
+            sfx.rattle_t = 0.0;
         }
-        if let Some(entity) = sfx.skidding {
-            let gain = if menu_open { 0.0 } else { skid_gain_for(slip) };
-            set_gain(world, entity, gain);
+        // Powerslide skids retrigger while the board slides sideways.
+        let skidding = riding && speed > 3.0 && slip < 0.906;
+        if skidding && !menu_open {
+            sfx.skid_t -= dt;
+            if sfx.skid_t <= 0.0 {
+                sfx.skid_t = SKID_REPEAT;
+                if let Some(clip) = sfx.banks.get(SKID_BANK).and_then(|bank| (!bank.is_empty()).then(|| bank[(sfx.skid_index + 1) % bank.len()].clone())) {
+                    info!("Sfx: powerslide skid");
+                    let entity = one_shot(world, &clip, skid_gain_for(slip), jitter(sfx.skid_index));
+                    sfx.voices.push((entity, 0.0));
+                }
+            }
+        } else {
+            sfx.skid_t = 0.0;
         }
-        // Speed wind loop, riding or airborne.
-        if let Some(clip) = sfx.banks.get(WIND_BANK).and_then(|bank| bank.first().cloned()) {
-            if sfx.winding.is_none() {
-                let entity = loop_voice(world, &clip, 0.0);
-                sfx.winding = Some(entity);
+        // Speed wind gusts retrigger at pace, riding or airborne.
+        if !menu_open && speed > 8.0 {
+            sfx.wind_t -= dt;
+            if sfx.wind_t <= 0.0 {
+                sfx.wind_t = WIND_REPEAT;
+                if let Some(clip) = sfx.banks.get(WIND_BANK).and_then(|bank| (!bank.is_empty()).then(|| bank[(sfx.wind_index + 1) % bank.len()].clone())) {
+                    let gain = ((speed - 8.0) / 12.0).clamp(0.0, 1.0) * WIND_GAIN;
+                    let entity = one_shot(world, &clip, gain, jitter(sfx.wind_index));
+                    sfx.voices.push((entity, 0.0));
+                }
             }
-            if let Some(entity) = sfx.winding {
-                let gain = if menu_open {
-                    0.0
-                } else {
-                    ((speed - 8.0) / 12.0).clamp(0.0, 1.0) * WIND_GAIN
-                };
-                set_gain(world, entity, gain);
-            }
+        } else {
+            sfx.wind_t = 0.0;
         }
         // Push stroke shove on a fresh Pushing intent; foot brake drags
         // the loop while the Brake intent holds.
@@ -434,15 +486,17 @@ fn direct(world: &mut World) {
         }
         sfx.was_pushing = pushing;
         if braking && riding && !menu_open {
-            if let Some(clip) = sfx.banks.get(PUSH_BANK).and_then(|bank| bank.first().cloned()) {
-                if sfx.braking.is_none() {
+            sfx.brake_t -= dt;
+            if sfx.brake_t <= 0.0 {
+                sfx.brake_t = BRAKE_REPEAT;
+                if let Some(clip) = sfx.banks.get(PUSH_BANK).and_then(|bank| (!bank.is_empty()).then(|| bank[(sfx.brake_index + 1) % bank.len()].clone())) {
                     info!("Sfx: foot brake");
-                    let entity = loop_voice(world, &clip, PUSH_GAIN);
-                    sfx.braking = Some(entity);
+                    let entity = one_shot(world, &clip, PUSH_GAIN, jitter(sfx.brake_index));
+                    sfx.voices.push((entity, 0.0));
                 }
             }
         } else {
-            stop_voice(world, &mut sfx.braking);
+            sfx.brake_t = 0.0;
         }
         // Takeoff flip snap on leaving the ground with the board.
         let airborne_now = !riding && !grinding && !bailing;
@@ -473,39 +527,41 @@ fn direct(world: &mut World) {
         } else {
             sfx.distance = 0.0;
         }
-        // Grind loop while a grind is active.
-        if grinding && !sfx.was_grinding {
-            if let Some(clip) = sfx.banks.get(GRIND_BANK).and_then(|bank| {
-                (!bank.is_empty()).then(|| bank[(sfx.grind_index + 1) % bank.len()].clone())
-            }) {
-                sfx.grind_index += 1;
-                info!("Sfx: grind start");
-                let entity = loop_voice(world, &clip, GRIND_GAIN);
-                sfx.grinding = Some(entity);
+        // Grind scrapes retrigger while a grind is active.
+        if grinding && !menu_open {
+            sfx.grind_t -= dt;
+            if sfx.grind_t <= 0.0 {
+                sfx.grind_t = GRIND_REPEAT;
+                if let Some(clip) = sfx.banks.get(GRIND_BANK).and_then(|bank| (!bank.is_empty()).then(|| bank[(sfx.grind_index + 1) % bank.len()].clone())) {
+                    info!("Sfx: grind scrape");
+                    let entity = one_shot(world, &clip, grind_gain_for(speed), jitter(sfx.grind_index));
+                    sfx.voices.push((entity, 0.0));
+                }
             }
-        } else if !grinding {
-            stop_voice(world, &mut sfx.grinding);
+        } else {
+            sfx.grind_t = 0.0;
         }
-        if let Some(entity) = sfx.grinding {
-            set_gain(world, entity, grind_gain_for(speed));
-        }
-        // Bail slide loop while wiping out, plus a crowd groan.
-        if bailing && !sfx.was_bailing {
-            if let Some(clip) = sfx.banks.get(BAIL_BANK).and_then(|bank| bank.first().cloned()) {
-                info!("Sfx: bail slide");
-                let entity = loop_voice(world, &clip, BAIL_GAIN);
-                sfx.bail_sliding = Some(entity);
+        // Bail slide rattles while wiping out, plus a crowd groan.
+        if bailing && !menu_open {
+            sfx.bail_t -= dt;
+            if sfx.bail_t <= 0.0 {
+                sfx.bail_t = BAIL_REPEAT;
+                if let Some(clip) = sfx.banks.get(BAIL_BANK).and_then(|bank| (!bank.is_empty()).then(|| bank[(sfx.bail_index + 1) % bank.len()].clone())) {
+                    info!("Sfx: bail slide");
+                    let entity = one_shot(world, &clip, BAIL_GAIN, jitter(sfx.bail_index));
+                    sfx.voices.push((entity, 0.0));
+                }
             }
-            if let Some(clip) = sfx.banks.get(OHH_BANK).and_then(|bank| {
-                (!bank.is_empty()).then(|| bank[(sfx.ohh_index + 1) % bank.len()].clone())
-            }) {
-                sfx.ohh_index += 1;
-                let entity = one_shot(world, &clip, CROWD_GAIN, 1.0);
-                sfx.voices.push((entity, 0.0));
+            if !sfx.was_bailing {
+                if let Some(clip) = sfx.banks.get(OHH_BANK).and_then(|bank| (!bank.is_empty()).then(|| bank[(sfx.ohh_index + 1) % bank.len()].clone())) {
+                    let entity = one_shot(world, &clip, CROWD_GAIN, 1.0);
+                    sfx.voices.push((entity, 0.0));
+                }
             }
-        } else if !bailing {
-            stop_voice(world, &mut sfx.bail_sliding);
+        } else {
+            sfx.bail_t = 0.0;
         }
+        sfx.was_bailing = bailing;
         // Landing thud on a new landing, scaled by the fall speed into it.
         if landing_seq != sfx.landing_seq {
             sfx.landing_seq = landing_seq;
@@ -534,10 +590,17 @@ fn direct(world: &mut World) {
                         sfx.voices.push((entity, 0.0));
                     }
                 }
+                // Harsh impacts layer a collision pool hit.
+                if impact > 0.9 {
+                    if let Some(hit) = sfx.pools.get(COLLISION_POOL).and_then(|pool| {
+                        (!pool.is_empty()).then(|| pool[(sfx.land_index + 1) % pool.len()].clone())
+                    }) {
+                        let entity = one_shot(world, &hit, LAND_GAIN, 1.0);
+                        sfx.voices.push((entity, 0.0));
+                    }
+                }
             }
         }
-        sfx.was_grinding = grinding;
-        sfx.was_bailing = bailing;
         sfx.fall_speed = fall;
         // Ambience bed follows the map; loops until the map changes.
         let bed = bed_for_map(map_path.as_deref(), &sfx.beds);
