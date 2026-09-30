@@ -648,7 +648,7 @@ pub(crate) fn interact(
                 2 => menu.settings.fps = cycle(LIMITS, menu.settings.fps, direction),
                 4 => {
                     menu.settings.display_mode =
-                        (menu.settings.display_mode as i32 + direction).rem_euclid(3) as u8;
+                        cycle(&[0u8, 1, 2], menu.settings.display_mode, direction);
                 }
                 3 => {
                     menu.difficulty = cycle(&Difficulty::ALL, menu.difficulty, direction);
@@ -755,6 +755,9 @@ fn apply(
     target: Res<SceneTarget>,
     mut images: ResMut<Assets<Image>>,
     mut previous: Local<Option<GraphicsSettings>>,
+    time: Option<Res<Time<Real>>>,
+    transition: Option<Res<crate::map_transition::MapTransition>>,
+    mut auto: Option<ResMut<AutoScale>>,
 ) {
     if previous.as_ref().is_none_or(|p| {
         p.display_mode != menu.settings.display_mode
@@ -763,7 +766,15 @@ fn apply(
     }) {
         apply_display_mode(&mut window, &menu.settings);
     }
-    let size = menu.settings.internal_size(window.physical_size());
+    let dt_ms = time.as_ref().map(|t| t.delta_secs() * 1000.0);
+    let busy = transition.as_ref().is_some_and(|t| t.busy());
+    if let Some(auto) = auto.as_mut() {
+        if let Some(scale) = auto.update(dt_ms, menu.settings.scale, busy) {
+            info!("Auto resolution: internal render scale {}% (setting {}%)", scale, menu.settings.scale);
+        }
+    }
+    let effective = auto.as_ref().map(|a| a.effective(menu.settings.scale)).unwrap_or(menu.settings.scale);
+    let size = GraphicsSettings::scaled_size(window.physical_size(), effective);
     if let Some(image) = images.get(&target.0) {
         if image.size() != size {
             images.get_mut(&target.0).unwrap().resize(Extent3d {
@@ -1209,9 +1220,10 @@ mod tests {
                 )),
             }
         }
-        // Manual cycling wraps in both directions.
-        assert_eq!((0i32 + 1).rem_euclid(3), 1);
-        assert_eq!((0i32 - 1).rem_euclid(3), 2);
+        // Menu cycling wraps in both directions through the real helper.
+        assert_eq!(cycle(&[0u8, 1, 2], 0, 1), 1);
+        assert_eq!(cycle(&[0u8, 1, 2], 2, 1), 0);
+        assert_eq!(cycle(&[0u8, 1, 2], 0, -1), 2);
     }
     #[test]
     fn scaled_target_and_cycle_boundaries() {

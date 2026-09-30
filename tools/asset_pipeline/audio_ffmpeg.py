@@ -15,7 +15,6 @@ FFMPEG_URL = ("https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
               "ffmpeg-n9.0-latest-win64-lgpl-9.0.zip")
 FFMPEG_SHA = "ef4ad9973c87043387a0c79158df7adbe32ed516fc5f591e6dce25b639a4b14b"
 
-
 def executable(cache, report):
     override = os.environ.get("SKATE3_FFMPEG")
     if override:
@@ -43,3 +42,11 @@ def executable(cache, report):
     if exe is None:
         raise RuntimeError("Missing ffmpeg.exe in downloaded FFmpeg build")
     return exe
+
+def probe_for(ffmpeg):
+    """Matching ffprobe for duration spot-checks, if one is available."""
+    sibling = Path(ffmpeg).parent / ("ffprobe" + Path(ffmpeg).suffix)
+    if sibling.is_file():
+        return sibling
+    found = shutil.which("ffprobe")
+    return Path(found) if found else None

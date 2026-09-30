@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.asset_pipeline import audio_music as music
 from tools.asset_pipeline import versions
 
-
 def make_mpf():
     data = bytearray(0x100)
     data[:4] = b"PFDx"
@@ -26,7 +25,6 @@ def make_mpf():
     struct.pack_into(">2I", data, 0x70, 0xAAE07D49, 47197)
     return bytes(data)
 
-
 def make_mus(sounds=2):
     header = struct.pack("<2I", 0xAAE07D49, sounds)
     header += bytes(0x28 - len(header))
@@ -36,12 +34,10 @@ def make_mus(sounds=2):
                             0x100 + i, 0x200 + i, 8, 0x1000, 0)
     return header + bytes(body)
 
-
 def make_snr(channels=2, rate=44100, samples=70560):
     h1 = (0 << 28) | (3 << 24) | ((channels - 1) << 18) | rate
     h2 = (1 << 30) | samples
     return struct.pack(">2I", h1, h2)
-
 
 class MusicParserTests(unittest.TestCase):
     def test_mpf_tables(self):
@@ -95,6 +91,29 @@ class MusicParserTests(unittest.TestCase):
         # Legacy markers without an audio pipeline trigger one refresh.
         self.assertIn("audio", versions.changed_groups({}, prints))
 
+    @unittest.skipUnless(__import__("shutil").which("ffmpeg"), "needs FFmpeg")
+    def test_verify_duration_accepts_matching_output(self):
+        import shutil
+        import subprocess
+        import tempfile
+        ffmpeg = shutil.which("ffmpeg")
+        with tempfile.TemporaryDirectory() as temp:
+            src = Path(temp) / "tone.wav"
+            subprocess.run([ffmpeg, "-hide_banner", "-y", "-v", "error",
+                            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                            "-ar", "44100", str(src)],
+                           check=True, capture_output=True)
+            out = Path(temp) / "tone.ogg"
+            subprocess.run([ffmpeg, "-hide_banner", "-y", "-v", "error",
+                            "-i", str(src), "-c:a", "libvorbis", str(out)],
+                           check=True, capture_output=True)
+            from tools.asset_pipeline.audio_ffmpeg import probe_for
+            ffprobe = probe_for(ffmpeg)
+            if ffprobe is None:
+                self.skipTest("needs ffprobe")
+            music.verify_duration(ffprobe, out, {"samples": 44100, "rate": 44100})
+            with self.assertRaises(RuntimeError):
+                music.verify_duration(ffprobe, out, {"samples": 44100 * 10, "rate": 44100})
 
 if __name__ == "__main__":
     unittest.main()

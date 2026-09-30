@@ -22,7 +22,6 @@ STATIONS = (
     ("ipod", "ipod.mpf", "Ipod_Stream.mus"),
 )
 
-
 def parse_mpf(path):
     data = Path(path).read_bytes()
     if data[:4] != b"PFDx" or data[4] != 5:
@@ -44,7 +43,6 @@ def parse_mpf(path):
         tracks.append({"start": start, "subbanks": nsub})
     return {"tracks": tracks, "streams": samples}
 
-
 def parse_mus(path):
     data = Path(path).read_bytes()
     count = struct.unpack("<I", data[4:8])[0]
@@ -57,14 +55,12 @@ def parse_mus(path):
                        "snr_size": snr_size, "sns_size": sns_size})
     return data, sounds
 
-
 def parse_snr(data):
     h1, h2 = struct.unpack(">2I", data[:8])
     return {"version": (h1 >> 28) & 0xF, "codec": (h1 >> 24) & 0xF,
             "channels": ((h1 >> 18) & 0x3F) + 1, "rate": h1 & 0x3FFFF,
             "type": (h2 >> 30) & 0x3, "loop": (h2 >> 29) & 0x1,
             "samples": h2 & 0x1FFFFFFF}
-
 
 def riff_xma2(payload, channels, rate, samples):
     mask = {1: 0x4, 2: 0x3}.get(channels, 0)
@@ -74,7 +70,6 @@ def riff_xma2(payload, channels, rate, samples):
     return (b"RIFF" + struct.pack("<I", 4 + 8 + len(fmt) + 8 + len(payload)) + b"WAVE"
             + b"fmt " + struct.pack("<I", len(fmt)) + fmt
             + b"data" + struct.pack("<I", len(payload)) + payload)
-
 
 def deblock_eaxma(data):
     """Strip EA-XMA block headers, returning raw XMA packets.
@@ -105,16 +100,18 @@ def deblock_eaxma(data):
         pos += block
     return bytes(out)
 
-
 def decode_stream(mus_data, sound, ffmpeg, out_ogg):
     snr = mus_data[sound["snr_off"]:sound["snr_off"] + sound["snr_size"]]
     info = parse_snr(snr)
     if info["version"] != 0 or info["codec"] != 3:
         raise ValueError(f"Unsupported EA stream: {info}")
     sns = mus_data[sound["sns_off"]:sound["sns_off"] + sound["sns_size"]]
+    # STREAM payloads are EA-blocked; anything else arrives as raw packets.
     payload = deblock_eaxma(sns) if info["type"] == 1 else sns
     if not payload:
         raise ValueError("Empty XMA payload after deblocking")
+    if info["channels"] not in (1, 2):
+        raise ValueError(f"Multichannel layers need per-layer streams: {info}")
     riff = riff_xma2(payload, info["channels"], info["rate"], info["samples"])
     proc = subprocess.run(
         [str(ffmpeg), "-hide_banner", "-y", "-v", "error",
@@ -126,12 +123,31 @@ def decode_stream(mus_data, sound, ffmpeg, out_ogg):
     info["duration_s"] = info["samples"] / info["rate"]
     return info
 
+def verify_duration(ffprobe, path, info):
+    """Spot-check one output against its header sample count."""
+    proc = subprocess.run(
+        [str(ffprobe), "-hide_banner", "-v", "error", "-show_entries",
+         "format=duration", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {proc.stderr[:200]}")
+    try:
+        actual = float(proc.stdout.strip())
+    except ValueError:
+        raise RuntimeError(f"ffprobe unreadable duration: {proc.stdout[:50]!r}")
+    expected = info["samples"] / info["rate"]
+    if abs(actual - expected) > 0.05:
+        raise RuntimeError(f"duration {actual:.3f}s != header {expected:.3f}s")
 
-def convert(game_root, out_dir, report, log, ffmpeg, workers=None):
+def convert(game_root, out_dir, report, log, ffmpeg, workers=None, verify_every=128):
     """Convert every station; returns the music manifest dict."""
     game_root, out_dir = Path(game_root), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     workers = workers or min(8, max(1, (os.cpu_count() or 2) // 2))
+    from .audio_ffmpeg import probe_for
+    ffprobe = probe_for(ffmpeg)
+    if ffprobe is None:
+        log.write("ffprobe unavailable; skipping duration spot-checks\n")
     manifest = {"version": 1, "stations": {}}
     for station, mpf_name, mus_name in STATIONS:
         report(f"Converting music station: {station}")
@@ -148,7 +164,10 @@ def convert(game_root, out_dir, report, log, ffmpeg, workers=None):
             target = station_dir / f"{i:04d}.ogg"
             try:
                 info = decode_stream(mus_data, sound, ffmpeg, target)
+                if ffprobe is not None and i % verify_every == 0:
+                    verify_duration(ffprobe, target, info)
             except (ValueError, RuntimeError) as error:
+                target.unlink(missing_ok=True)
                 return (i, None, f"{station} stream {i}: skipped ({error})")
             return (i, {"file": f"{station}/{target.name}", "index": i,
                         "samples": info["samples"], "rate": info["rate"],
