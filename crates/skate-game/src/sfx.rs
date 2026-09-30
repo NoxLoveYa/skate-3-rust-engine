@@ -23,7 +23,20 @@ const LAND_BANK: &str = "board_scrapes";
 const BAIL_BANK: &str = "Bodyslide";
 const CHEER_BANK: &str = "arena_cheers";
 const OHH_BANK: &str = "arena_ohhs";
+const SKID_BANK: &str = "WHEEL_SKID_BANK";
+const SEAM_BANK: &str = "Seams_Bank";
+const SQUEAK_BANK: &str = "Brd_Squeaks";
+const FLIP_BANK: &str = "Sk8_Air_Flip_Tricks";
+const WIND_BANK: &str = "sense_of_speed";
+const PUSH_BANK: &str = "FOOT_DRAG";
 const CROWD_GAIN: f32 = 0.4;
+const PUSH_GAIN: f32 = 0.55;
+const SKID_GAIN: f32 = 0.55;
+const SEAM_GAIN: f32 = 0.3;
+const SEAM_METERS: f32 = 4.0;
+const SQUEAK_GAIN: f32 = 0.4;
+const FLIP_GAIN: f32 = 0.6;
+const WIND_GAIN: f32 = 0.35;
 /// Second rolling layer. The retail rolling sound is a composite (base wheel
 /// loop plus rattles/seams); the banks below come from the engine's own
 /// AEMS registry (SK8_AEMS_rolling.csi family).
@@ -65,6 +78,9 @@ struct Sfx {
     wheels: Vec<Handle<AudioSource>>,
     rolling: Option<Entity>,
     rattle: Option<Entity>,
+    skidding: Option<Entity>,
+    winding: Option<Entity>,
+    braking: Option<Entity>,
     grinding: Option<Entity>,
     bail_sliding: Option<Entity>,
     ambient: Option<Entity>,
@@ -73,6 +89,12 @@ struct Sfx {
     land_index: usize,
     cheer_index: usize,
     ohh_index: usize,
+    flip_index: usize,
+    seam_index: usize,
+    push_index: usize,
+    distance: f32,
+    was_grounded: bool,
+    was_pushing: bool,
     was_grinding: bool,
     was_bailing: bool,
     landing_seq: u32,
@@ -258,6 +280,16 @@ mod tests {
         let mid = grind_gain_for(5.0);
         assert!(mid > grind_gain_for(0.0) && mid < grind_gain_for(100.0));
     }
+    #[test]
+    fn skid_needs_sideways_slip_at_speed() {
+        assert_eq!(slip_cos(0.0, 0.0, 1.0, 0.0), 1.0);
+        assert!((slip_cos(5.0, 0.0, 1.0, 0.0) - 1.0).abs() < 0.001);
+        assert!(slip_cos(0.0, 5.0, 1.0, 0.0).abs() < 0.001);
+        assert_eq!(skid_gain_for(1.0), 0.0);
+        assert_eq!(skid_gain_for(0.906), 0.0);
+        assert!(skid_gain_for(0.5) > 0.0);
+        assert_eq!(skid_gain_for(-1.0), SKID_GAIN);
+    }
 }
 
 /// Rolling gain from horizontal speed. Anything but riding on the ground
@@ -275,11 +307,28 @@ fn grind_gain_for(speed: f32) -> f32 {
     (0.25 + 0.75 * (speed / 10.0).clamp(0.0, 1.0)) * GRIND_GAIN
 }
 
+/// Cosine between board travel and board facing. Powerslides break traction
+/// past ~25 degrees; the skid loop fades in from there to sideways.
+fn slip_cos(vx: f32, vz: f32, fx: f32, fz: f32) -> f32 {
+    let denom = (vx * vx + vz * vz).sqrt() * (fx * fx + fz * fz).sqrt();
+    if denom <= 0.0 {
+        return 1.0;
+    }
+    ((vx * fx + vz * fz) / denom).clamp(-1.0, 1.0)
+}
+
+fn skid_gain_for(cos: f32) -> f32 {
+    ((0.906 - cos) / 0.5).clamp(0.0, 1.0) * SKID_GAIN
+}
+
 fn direct(world: &mut World) {
     let speed;
+    let slip: f32;
     let grinding;
     let bailing;
     let riding;
+    let pushing;
+    let braking;
     let landing_seq;
     let fall;
     let map_path;
@@ -294,7 +343,12 @@ fn direct(world: &mut World) {
         // Category 500 is off-board; filtered 1 is plain ground. Rolling
         // needs both: riding the board on the ground, nothing else.
         riding = input.state.category_12 != 500 && input.filtered_state_0 == 1;
+        let root = skater.animated_skeleton.roots.animation_to_world;
+        slip = slip_cos(raw[0], raw[2], root[2][0], root[2][2]);
         landing_seq = skater.scoring.landing_seq;
+        let controls = world.resource::<crate::physics::PlayerControls>();
+        pushing = controls.named_intents.contains_key("Pushing");
+        braking = controls.named_intents.contains_key("Brake");
         let physics = world.resource::<crate::physics::GamePhysics>();
         bailing = physics.board_wiping_out;
         map_path = world
@@ -306,6 +360,7 @@ fn direct(world: &mut World) {
             .is_some_and(|menu| menu.open);
     }
     world.resource_scope(|world, mut sfx: Mut<Sfx>| {
+        let dt = world.resource::<Time<Real>>().delta_secs().clamp(0.0, 0.25);
         let roll_gain = if menu_open { 0.0 } else { roll_gain_for(speed, riding) };
         if let Some(wheel) = sfx.wheels.last() {
             if sfx.rolling.is_none() {
@@ -332,6 +387,91 @@ fn direct(world: &mut World) {
                 };
                 set_gain(world, entity, rattle_gain);
             }
+        }
+        // Powerslide skid loop while the board slides sideways.
+        let skidding = riding && speed > 3.0 && slip < 0.906;
+        if skidding {
+            if let Some(clip) = sfx.banks.get(SKID_BANK).and_then(|bank| bank.first().cloned()) {
+                if sfx.skidding.is_none() {
+                    info!("Sfx: powerslide skid");
+                    let entity = loop_voice(world, &clip, 0.0);
+                    sfx.skidding = Some(entity);
+                }
+            }
+        } else {
+            stop_voice(world, &mut sfx.skidding);
+        }
+        if let Some(entity) = sfx.skidding {
+            let gain = if menu_open { 0.0 } else { skid_gain_for(slip) };
+            set_gain(world, entity, gain);
+        }
+        // Speed wind loop, riding or airborne.
+        if let Some(clip) = sfx.banks.get(WIND_BANK).and_then(|bank| bank.first().cloned()) {
+            if sfx.winding.is_none() {
+                let entity = loop_voice(world, &clip, 0.0);
+                sfx.winding = Some(entity);
+            }
+            if let Some(entity) = sfx.winding {
+                let gain = if menu_open {
+                    0.0
+                } else {
+                    ((speed - 8.0) / 12.0).clamp(0.0, 1.0) * WIND_GAIN
+                };
+                set_gain(world, entity, gain);
+            }
+        }
+        // Push stroke shove on a fresh Pushing intent; foot brake drags
+        // the loop while the Brake intent holds.
+        if pushing && !sfx.was_pushing {
+            if let Some(clip) = sfx.banks.get(PUSH_BANK).and_then(|bank| {
+                (!bank.is_empty()).then(|| bank[(sfx.push_index + 1) % bank.len()].clone())
+            }) {
+                sfx.push_index += 1;
+                info!("Sfx: push stroke");
+                let entity = one_shot(world, &clip, PUSH_GAIN, 1.0);
+                sfx.voices.push((entity, 0.0));
+            }
+        }
+        sfx.was_pushing = pushing;
+        if braking && riding && !menu_open {
+            if let Some(clip) = sfx.banks.get(PUSH_BANK).and_then(|bank| bank.first().cloned()) {
+                if sfx.braking.is_none() {
+                    info!("Sfx: foot brake");
+                    let entity = loop_voice(world, &clip, PUSH_GAIN);
+                    sfx.braking = Some(entity);
+                }
+            }
+        } else {
+            stop_voice(world, &mut sfx.braking);
+        }
+        // Takeoff flip snap on leaving the ground with the board.
+        let airborne_now = !riding && !grinding && !bailing;
+        if airborne_now && sfx.was_grounded {
+            if let Some(clip) = sfx.banks.get(FLIP_BANK).and_then(|bank| {
+                (!bank.is_empty()).then(|| bank[(sfx.flip_index + 1) % bank.len()].clone())
+            }) {
+                sfx.flip_index += 1;
+                info!("Sfx: takeoff flip");
+                let entity = one_shot(world, &clip, FLIP_GAIN, 1.0);
+                sfx.voices.push((entity, 0.0));
+            }
+        }
+        sfx.was_grounded = riding;
+        // Pavement seam clicks every few meters of riding.
+        if riding && !menu_open {
+            sfx.distance += speed * dt;
+            if sfx.distance >= SEAM_METERS {
+                sfx.distance = 0.0;
+                if let Some(clip) = sfx.banks.get(SEAM_BANK).and_then(|bank| {
+                    (!bank.is_empty()).then(|| bank[(sfx.seam_index + 1) % bank.len()].clone())
+                }) {
+                    sfx.seam_index += 1;
+                    let entity = one_shot(world, &clip, SEAM_GAIN, 1.0);
+                    sfx.voices.push((entity, 0.0));
+                }
+            }
+        } else {
+            sfx.distance = 0.0;
         }
         // Grind loop while a grind is active.
         if grinding && !sfx.was_grinding {
@@ -377,6 +517,13 @@ fn direct(world: &mut World) {
                 info!("Sfx: landing impact={impact:.2}");
                 let entity = one_shot(world, &clip, impact * LAND_GAIN, 0.9 + 0.2 * impact);
                 sfx.voices.push((entity, 0.0));
+                // Mid-fall landings creak the trucks on top of the slap.
+                if (0.35..0.65).contains(&impact) {
+                    if let Some(squeak) = sfx.banks.get(SQUEAK_BANK).and_then(|bank| bank.first().cloned()) {
+                        let entity = one_shot(world, &squeak, SQUEAK_GAIN, 1.0);
+                        sfx.voices.push((entity, 0.0));
+                    }
+                }
                 // Big air gets a crowd reaction.
                 if impact > 0.8 {
                     if let Some(cheer) = sfx.banks.get(CHEER_BANK).and_then(|bank| {
@@ -404,7 +551,6 @@ fn direct(world: &mut World) {
             }
         }
         // Retire finished one-shots; voiceless ones time out in a second.
-        let dt = world.resource::<Time<Real>>().delta_secs().clamp(0.0, 0.25);
         sfx.voices.retain(|(entity, pending)| {
             if world.get_entity(*entity).is_err() {
                 return false;
