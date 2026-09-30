@@ -39,6 +39,7 @@ def audio(game_root, stage, work, report, log, converted=None):
     from .audio_ffmpeg import executable as ffmpeg_executable
     from .audio_music import convert as convert_music
     from .audio_sfx import convert_sfx
+    from .audio_speech import convert_speech
     from .optional_content import CONTENT_ERRORS, note
     report('Preparing retail music')
     # Share the setup tool cache next to extract-xiso: stage is
@@ -50,6 +51,8 @@ def audio(game_root, stage, work, report, log, converted=None):
         convert_music(game_root, private/'audio', report, log, ffmpeg)
         report('Preparing retail sound effects')
         convert_sfx(game_root, private/'audio', work/'audio', report, log, ffmpeg)
+        report('Preparing retail speech')
+        convert_speech(game_root, private/'audio', work/'audio-speech', report, log, ffmpeg)
     except CONTENT_ERRORS as error:
         # Music is optional content: a missing decoder or unreadable banks
         # must not block the playable installation.
