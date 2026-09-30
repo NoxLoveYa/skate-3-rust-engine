@@ -41,6 +41,8 @@ struct GraphicsSettings {
     ambient_level: Option<u32>,
     /// 0 = windowed, 1 = borderless fullscreen, 2 = exclusive fullscreen.
     display_mode: u8,
+    /// Retail music station: 0 = world, 1 = game, 2 = iPod, 3 = off.
+    music: u8,
 }
 /// Display-mode labels indexed by `GraphicsSettings::display_mode`.
 const DISPLAY_MODES: &[&str] = &["Windowed", "Borderless", "Fullscreen"];
@@ -55,6 +57,7 @@ impl Default for GraphicsSettings {
             day_speed: 60,
             ambient_level: None,
             display_mode: 0,
+            music: 0,
         }
     }
 }
@@ -74,6 +77,9 @@ impl GraphicsSettings {
         }
         if self.display_mode > 2 {
             self.display_mode = 0;
+        }
+        if self.music >= crate::music::STATIONS.len() as u8 {
+            self.music = 0;
         }
         self
     }
@@ -209,6 +215,9 @@ impl Menu {
     pub(crate) fn diagnostic_settings(&self) -> String {
         format!("{:?}", self.settings)
     }
+    pub(crate) fn music_station(&self) -> u8 {
+        self.settings.music
+    }
     pub(crate) fn transition_finished(&mut self, status: String, resume: bool) {
         self.status = status;
         self.open = !resume;
@@ -250,7 +259,7 @@ impl Menu {
             }
             0 => (1000..1000 + self.maps.len()).collect(),
             1 => vec![3, 8, 10],
-            2 => vec![0, 1, 2, 4, 13],
+            2 => vec![0, 1, 2, 4, 5, 13],
             4 => vec![7, 11, 14],
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
@@ -513,7 +522,8 @@ pub(crate) fn interact(
         let adjustable = (menu.daylight && menu.selected < 3)
             || (!menu.multiplayer
                 && !menu.daylight
-                && (menu.selected < 4 || (menu.section == 2 && menu.selected == 4)));
+                && (menu.selected < 4
+                    || (menu.section == 2 && menu.selected <= 5)));
         if adjustable && (keys.just_pressed(KeyCode::ArrowLeft) || nav.pressed & 4 != 0) {
             action = Some((menu.selected, -1));
         }
@@ -650,6 +660,13 @@ pub(crate) fn interact(
                     menu.settings.display_mode =
                         cycle(&[0u8, 1, 2], menu.settings.display_mode, direction);
                 }
+                5 => {
+                    menu.settings.music = cycle(
+                        &[0u8, 1, 2, 3],
+                        menu.settings.music,
+                        direction,
+                    );
+                }
                 3 => {
                     menu.difficulty = cycle(&Difficulty::ALL, menu.difficulty, direction);
                     physics.set_difficulty(menu.difficulty);
@@ -681,7 +698,7 @@ pub(crate) fn interact(
                 _ => {}
             }
         }
-        if ((row < 3 || row == 4) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
+        if ((row < 3 || row == 4 || row == 5) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
             let save = save_settings(&menu);
             menu.status = match save {
                 Ok(()) => "Saved".into(),
@@ -939,6 +956,12 @@ fn labels(
                         .get(s.display_mode as usize)
                         .unwrap_or(&"Windowed")
                 ),
+                5 => format!(
+                    "Music                 {}",
+                    crate::music::STATIONS
+                        .get(s.music as usize)
+                        .unwrap_or(&"World")
+                ),
                 3 => format!("Difficulty            {}", menu.difficulty.label()),
                 6 => "Resume".into(),
                 7 => "Quit game".into(),
@@ -1176,7 +1199,7 @@ mod tests {
         assert!(!SECTIONS.iter().any(|(name,_)| matches!(*name,"SESSION"|"WORLD")));
         menu.select_section(2);
         assert!(!menu.multiplayer && !menu.browser);
-        assert_eq!(menu.rows(), vec![0, 1, 2, 4, 13]);
+        assert_eq!(menu.rows(), vec![0, 1, 2, 4, 5, 13]);
         menu.daylight = true;
         assert_eq!(menu.rows(), vec![0,1,2,3]);
     }
