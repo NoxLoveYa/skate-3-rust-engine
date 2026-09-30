@@ -35,6 +35,27 @@ def hud(game_root, stage, work, report, log, converted=None):
              '--assets', stage/'assets', '--work', work/'hud'), log, report)
 
 
+def audio(game_root, stage, work, report, log, converted=None):
+    from .audio_ffmpeg import executable as ffmpeg_executable
+    from .audio_music import convert as convert_music
+    from .optional_content import CONTENT_ERRORS, note
+    report('Preparing retail music')
+    # Share the setup tool cache next to extract-xiso: stage is
+    # <base>/installations/<id>, tools live in <base>/tools.
+    cache = stage.parent.parent/'tools' if stage.parent.name == 'installations' else work/'tools-cache'
+    private = stage/"assets/private"
+    try:
+        ffmpeg = ffmpeg_executable(cache, report)
+        convert_music(game_root, private/'audio', report, log, ffmpeg)
+    except CONTENT_ERRORS as error:
+        # Music is optional content: a missing decoder or unreadable banks
+        # must not block the playable installation.
+        (private/'audio').mkdir(parents=True, exist_ok=True)
+        (private/'audio/music.json').write_text(
+            json.dumps({"version": 1, "stations": {}}), encoding="utf-8")
+        note(private/'audio-availability.json', 'Music', error, report=report)
+
+
 def character(game_root, stage, work, report, log, converted=None):
     private=stage/"assets/private"
     stock=private/"stock"

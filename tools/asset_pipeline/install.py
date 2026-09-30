@@ -328,6 +328,9 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
         required_files=['default.xex']
         if 'core' in groups:required_files += ['data/big/miscload.big','data/big/miscboot.big','data/big/db.big']
         if 'character' in groups:required_files += ['data/content/createacharacter.big']
+        if 'audio' in groups:required_files += ['data/audio/music/Game_Stream.mus',
+            'data/audio/music/World_Stream.mus', 'data/audio/music/Ipod_Stream.mus',
+            'data/audio/music/game.mpf', 'data/audio/music/world.mpf', 'data/audio/music/ipod.mpf']
         for required in required_files:
             if not (game_root/required).is_file():raise RuntimeError('This is not a supported Skate 3 disc: missing '+required)
         source_hash=digest(game_root/'default.xex')
@@ -344,6 +347,8 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             exports.character(game_root,stage,work,report,log,converted)
         if 'environment' in groups:
             exports.environment(game_root,stage,work,report,log,converted)
+        if 'audio' in groups:
+            exports.audio(game_root,stage,work,report,log)
         if 'maps' in groups:
             report('Preparing authored movable-object models')
             from .dynamic_props import prepare_catalog

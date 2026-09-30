@@ -31,8 +31,13 @@ class AssetVersions(unittest.TestCase):
     def test_equivalences_only_accept_exact_old_and_new_pair(self):
         migrations=json.loads(Path(v.__file__).with_name('pipeline-equivalence.json').read_text())
         # Equivalences describe historical pairs, not every future exporter.
-        current={g:migrations[g][0][1] for g in v.GROUPS}
-        old={g:migrations[g][0][0] for g in v.GROUPS}
+        groups=[g for g in v.GROUPS if g in migrations]
+        current={g:migrations[g][0][1] for g in groups}
+        old={g:migrations[g][0][0] for g in groups}
+        # Groups without a historical pair stay put on both sides.
+        for g in v.GROUPS:
+            current.setdefault(g, 'unchanged')
+            old.setdefault(g, 'unchanged')
         self.assertEqual(v.changed_groups(old,current),set())
         changed={**current,'maps':'future-exporter'}
         self.assertEqual(v.changed_groups(old,changed),{'maps'})
@@ -73,7 +78,9 @@ class AssetVersions(unittest.TestCase):
         (base/'installation.json').write_text(json.dumps(marker))
         source=root/'disc'
         for name in ('default.xex','data/big/miscload.big','data/big/miscboot.big','data/big/db.big',
-                     'data/content/createacharacter.big','data/content/marquee.big','data/content/worldDIST_University.big'):
+                     'data/content/createacharacter.big','data/content/marquee.big','data/content/worldDIST_University.big',
+                     'data/audio/music/Game_Stream.mus','data/audio/music/World_Stream.mus','data/audio/music/Ipod_Stream.mus',
+                     'data/audio/music/game.mpf','data/audio/music/world.mpf','data/audio/music/ipod.mpf'):
             p=source/name;p.parent.mkdir(parents=True,exist_ok=True);p.touch()
         return base,old,source,current,marker
 
