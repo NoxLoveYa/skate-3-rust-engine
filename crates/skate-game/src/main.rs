@@ -40,6 +40,7 @@ mod customiser_material;
 mod custom_models;
 mod teleport_menu;
 mod music;
+mod sfx;
 mod render_capacity;
 mod retail_render;
 mod retail_character;

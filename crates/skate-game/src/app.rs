@@ -142,6 +142,7 @@ pub(crate) fn build(
         crate::performance::PerformancePlugin,
     ));
     app.add_plugins(crate::music::MusicPlugin);
+    app.add_plugins(crate::sfx::SfxPlugin);
     app.add_plugins((crate::session_marker::SessionMarkerPlugin, crate::customiser::CustomiserPlugin));
     app.add_plugins(crate::custom_models::CustomModelsPlugin);
     app.add_plugins(crate::modding::ModdingPlugin);
