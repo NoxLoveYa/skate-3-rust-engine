@@ -230,13 +230,43 @@ mod tests {
     fn bank_roles_are_named() {
         assert_eq!((GRIND_BANK, LAND_BANK, BAIL_BANK), ("GRINDS", "board_scrapes", "Bodyslide"));
     }
+    #[test]
+    fn rolling_is_silent_unless_riding() {
+        assert_eq!(roll_gain_for(10.0, false), 0.0);
+        assert_eq!(roll_gain_for(0.0, true), 0.0);
+        assert_eq!(roll_gain_for(0.4, true), 0.0);
+        assert!(roll_gain_for(4.0, true) > 0.0);
+        assert_eq!(roll_gain_for(100.0, true), ROLL_GAIN);
+    }
+    #[test]
+    fn grind_gain_tracks_slide_speed() {
+        assert_eq!(grind_gain_for(0.0), 0.25 * GRIND_GAIN);
+        assert_eq!(grind_gain_for(100.0), GRIND_GAIN);
+        let mid = grind_gain_for(5.0);
+        assert!(mid > grind_gain_for(0.0) && mid < grind_gain_for(100.0));
+    }
+}
+
+/// Rolling gain from horizontal speed. Anything but riding on the ground
+/// (air, grind, bail, off-board, teleport) is silent: a fallen board never
+/// keeps blasting the cruise loop.
+fn roll_gain_for(speed: f32, riding: bool) -> f32 {
+    if !riding {
+        return 0.0;
+    }
+    ((speed - 0.5) / 8.0).clamp(0.0, 1.0) * ROLL_GAIN
+}
+
+/// Grind loudness follows slide speed so slow stalls fade against fast rails.
+fn grind_gain_for(speed: f32) -> f32 {
+    (0.25 + 0.75 * (speed / 10.0).clamp(0.0, 1.0)) * GRIND_GAIN
 }
 
 fn direct(world: &mut World) {
     let speed;
     let grinding;
     let bailing;
-    let airborne;
+    let riding;
     let landing_seq;
     let fall;
     let map_path;
@@ -248,7 +278,9 @@ fn direct(world: &mut World) {
         speed = (raw[0] * raw[0] + raw[2] * raw[2]).sqrt();
         fall = (-raw[1]).max(0.0);
         grinding = skater.grind.active_name().is_some();
-        airborne = input.filtered_state_0 == 2;
+        // Category 500 is off-board; filtered 1 is plain ground. Rolling
+        // needs both: riding the board on the ground, nothing else.
+        riding = input.state.category_12 != 500 && input.filtered_state_0 == 1;
         landing_seq = skater.scoring.landing_seq;
         let physics = world.resource::<crate::physics::GamePhysics>();
         bailing = physics.board_wiping_out;
@@ -261,12 +293,7 @@ fn direct(world: &mut World) {
             .is_some_and(|menu| menu.open);
     }
     world.resource_scope(|world, mut sfx: Mut<Sfx>| {
-        // Rolling loop follows horizontal speed; silent in the air and slow.
-        let roll_gain = if menu_open || airborne {
-            0.0
-        } else {
-            ((speed - 0.5) / 8.0).clamp(0.0, 1.0) * ROLL_GAIN
-        };
+        let roll_gain = if menu_open { 0.0 } else { roll_gain_for(speed, riding) };
         if let Some(wheel) = sfx.wheels.last() {
             if sfx.rolling.is_none() {
                 let entity = loop_voice(world, wheel, 0.0);
@@ -288,6 +315,9 @@ fn direct(world: &mut World) {
             }
         } else if !grinding {
             stop_voice(world, &mut sfx.grinding);
+        }
+        if let Some(entity) = sfx.grinding {
+            set_gain(world, entity, grind_gain_for(speed));
         }
         // Bail slide loop while wiping out.
         if bailing && !sfx.was_bailing {
