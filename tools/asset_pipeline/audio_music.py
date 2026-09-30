@@ -100,6 +100,43 @@ def deblock_eaxma(data):
         pos += block
     return bytes(out)
 
+
+def deblock_eaxma_layers(data):
+    """One raw XMA payload per layer stream (1/2ch each, in file order)."""
+    blocks = []
+    pos = 0
+    size = len(data)
+    while pos + 8 <= size:
+        flag = data[pos]
+        block = int.from_bytes(data[pos:pos + 4], "big") & 0xFFFFFF
+        if block == 0 or (flag != 0x00 and flag != 0x80):
+            break
+        sections = []
+        cursor = pos + 0x04 + 0x04
+        while cursor + 4 <= pos + block:
+            section = int.from_bytes(data[cursor:cursor + 4], "big") // 4
+            cursor += 0x04
+            section -= 0x04
+            if section <= 0 or cursor + section > pos + block:
+                break
+            sections.append(data[cursor:cursor + section])
+            cursor += section
+        if sections:
+            blocks.append(sections)
+        pos += block
+    layers: list[bytearray] = []
+    last = len(blocks) - 1
+    for b, sections in enumerate(blocks):
+        while len(layers) < len(sections):
+            layers.append(bytearray())
+        for payload, layer in zip(sections, layers):
+            layer += payload
+            if b != last:
+                pad = (-len(layer)) % 0x800
+                if pad:
+                    layer += b"\xff" * pad
+    return [bytes(layer) for layer in layers]
+
 def decode_stream(mus_data, sound, ffmpeg, out_ogg):
     snr = mus_data[sound["snr_off"]:sound["snr_off"] + sound["snr_size"]]
     info = parse_snr(snr)
@@ -123,6 +160,37 @@ def decode_stream(mus_data, sound, ffmpeg, out_ogg):
     info["duration_s"] = info["samples"] / info["rate"]
     return info
 
+def decode_layered(layers, channels, rate, samples, ffmpeg, out_ogg, work):
+    """Decode 1/2ch XMA layers and merge them to one multichannel file."""
+    work.mkdir(parents=True, exist_ok=True)
+    counts = [2] * (channels // 2) + ([1] if channels % 2 else [])
+    if len(layers) != len(counts):
+        raise ValueError(f"Expected {len(counts)} XMA layers, found {len(layers)}")
+    wavs = []
+    for n, (payload, count) in enumerate(zip(layers, counts)):
+        target = work / f"layer{n}.wav"
+        riff = riff_xma2(payload, count, rate, samples)
+        proc = subprocess.run(
+            [str(ffmpeg), "-hide_banner", "-y", "-v", "error",
+             "-i", "pipe:0", "-map", "0:a", "-c:a", "pcm_s16le", str(target)],
+            input=riff, capture_output=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"FFmpeg layer decode failed: {proc.stderr.decode(errors='replace')[:300]}")
+        wavs.append(target)
+    inputs = []
+    for wav in wavs:
+        inputs += ["-i", str(wav)]
+    proc = subprocess.run(
+        [str(ffmpeg), "-hide_banner", "-y", "-v", "error", *inputs,
+         "-filter_complex", f"amerge=inputs={len(wavs)}",
+         "-c:a", "libvorbis", "-q:a", "5", str(out_ogg)],
+        capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"FFmpeg merge failed: {proc.stderr.decode(errors='replace')[:300]}")
+    import shutil
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def verify_duration(ffprobe, path, info):
     """Spot-check one output against its header sample count."""
     proc = subprocess.run(
@@ -138,6 +206,7 @@ def verify_duration(ffprobe, path, info):
     expected = info["samples"] / info["rate"]
     if abs(actual - expected) > 0.05:
         raise RuntimeError(f"duration {actual:.3f}s != header {expected:.3f}s")
+    return actual
 
 def convert(game_root, out_dir, report, log, ffmpeg, workers=None, verify_every=128):
     """Convert every station; returns the music manifest dict."""

@@ -90,7 +90,6 @@ class MusicParserTests(unittest.TestCase):
         self.assertEqual(len(prints["audio"]), 64)
         # Legacy markers without an audio pipeline trigger one refresh.
         self.assertIn("audio", versions.changed_groups({}, prints))
-
     @unittest.skipUnless(__import__("shutil").which("ffmpeg"), "needs FFmpeg")
     def test_verify_duration_accepts_matching_output(self):
         import shutil

@@ -24,7 +24,8 @@ SOURCES = {
     'maps': PARSERS + ('asset_pipeline/optional_content.py', 'asset_pipeline/map*.py', 'asset_pipeline/dynamic_props.py',
              'asset_pipeline/environment.py', 'asset_pipeline/irradiance.py',
              'asset_pipeline/retail_material.py', 'asset_pipeline/backdrop.py', 'asset_pipeline/sky.py'),
-    'audio': ('asset_pipeline/audio_music.py', 'asset_pipeline/audio_ffmpeg.py'),
+    'audio': ('asset_pipeline/audio_music.py', 'asset_pipeline/audio_ffmpeg.py',
+              'asset_pipeline/audio_sfx.py'),
 }
 
 
